@@ -40,6 +40,12 @@ codex-session-migrator -rollback <snapshot-dir-or-name>
 
 ![Codex Session Migrator 演示](docs/demo/codex-session-migrator-demo.png)
 
+![设置面板](docs/demo/codex-session-migrator-settings.png)
+
+![迁移确认](docs/demo/codex-session-migrator-migrate.png)
+
+![会话搜索](docs/demo/codex-session-migrator-search.png)
+
 常用键：
 
 - `Tab` / `p` / `g`：切换 Providers、Projects、Sessions 焦点
