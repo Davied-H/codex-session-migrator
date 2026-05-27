@@ -55,6 +55,9 @@ var (
 	projectStyle = lipgloss.NewStyle().
 			Foreground(colorWarn).
 			Bold(true)
+	dateHeaderStyle = lipgloss.NewStyle().
+			Foreground(colorWarn).
+			Bold(true)
 
 	panelStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -490,8 +493,12 @@ func (m Model) renderProjects(width, height int) string {
 	end := min(len(projects), m.offsetG+limit)
 	for i := m.offsetG; i < end; i++ {
 		p := projects[i]
-		nameWidth := max(1, rowWidth-6)
-		line := padRight(truncate(p.Name, nameWidth), nameWidth) + fmt.Sprintf(" %5d", p.Count)
+		indent := ""
+		if p.Key != allProjectsKey {
+			indent = "  "
+		}
+		nameWidth := max(1, rowWidth-lipgloss.Width(indent)-6)
+		line := indent + padRight(truncate(p.Name, nameWidth), nameWidth) + fmt.Sprintf(" %5d", p.Count)
 		rows = append(rows, m.renderNavRow(line, contentWidth, m.focus == focusProjects && i == m.cursorG, false))
 	}
 	rows = append(rows, m.scrollHint(m.offsetG, limit, len(projects)))
@@ -508,11 +515,12 @@ func (m Model) renderSessions(width, height int) string {
 	sessions := m.viewSessions()
 	timeHeader := "时间"
 	timeWidth := len("15:04")
-	titleWidth := max(1, rowWidth-lipgloss.Width("  [ ] ")-2-timeWidth)
+	sessionIndent := "    "
+	titleWidth := max(1, rowWidth-lipgloss.Width(sessionIndent)-lipgloss.Width("[ ] ")-2-timeWidth)
 	title := fmt.Sprintf("Sessions  %s", mutedStyle.Render(fmt.Sprintf("%d/%d", len(sessions), m.viewAllSessionCount())))
 	rows := []string{
 		m.renderPanelTitle(focusSessions, title, contentWidth),
-		dimStyle.Render(padRight("    "+padRight(timeHeader, timeWidth)+"  标题", contentWidth)),
+		dimStyle.Render(padRight(truncatePreserveSpace(sessionIndent+padRight(timeHeader, timeWidth)+"  标题", contentWidth), contentWidth)),
 	}
 	limit := max(0, contentHeight-3)
 	now := time.Now()
@@ -522,7 +530,7 @@ func (m Model) renderSessions(width, height int) string {
 		s := sessions[i]
 		group := sessionDateLabel(s.UpdatedAt, now)
 		if group != lastGroup {
-			rows = append(rows, truncate(dimStyle.Render("  "+group), contentWidth))
+			rows = append(rows, truncatePreserveSpace(dateHeaderStyle.Render("  ─ "+group), contentWidth))
 			visibleRows++
 			lastGroup = group
 			if visibleRows >= limit {
@@ -535,7 +543,7 @@ func (m Model) renderSessions(width, height int) string {
 		}
 		updated := padRight(truncate(sessionTimeString(s.UpdatedAt), timeWidth), timeWidth)
 		title := renderSessionTitleCell(s.Archived, m.displayThreadTitle(s), titleWidth)
-		line := "  " + check + " " + updated + "  " + title
+		line := sessionIndent + check + " " + updated + "  " + title
 		active := m.focus == focusSessions && i == m.cursorS
 		selected := m.selected[s.ID]
 		rows = append(rows, m.renderNavRow(line, contentWidth, active, selected))
@@ -731,7 +739,7 @@ func (m Model) renderNavRow(text string, width int, active, selected bool) strin
 		prefix = "› "
 	}
 	bodyWidth := max(0, width-lipgloss.Width(prefix))
-	line := prefix + padRight(truncate(text, bodyWidth), bodyWidth)
+	line := prefix + padRight(truncatePreserveSpace(text, bodyWidth), bodyWidth)
 	if active {
 		return activeRowStyle.Render(line)
 	}
@@ -839,6 +847,17 @@ func highlightMatches(text, query string) string {
 
 func truncate(s string, width int) string {
 	s = singleLineDisplay(s)
+	if width <= 0 {
+		return ""
+	}
+	if xansi.StringWidth(s) <= width {
+		return s
+	}
+	return xansi.Truncate(s, width, "…")
+}
+
+func truncatePreserveSpace(s string, width int) string {
+	s = strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(s)
 	if width <= 0 {
 		return ""
 	}
@@ -993,7 +1012,7 @@ func fitPanelContent(content string, width, height int) string {
 		lines = lines[:height]
 	}
 	for i := range lines {
-		lines[i] = truncate(lines[i], width)
+		lines[i] = truncatePreserveSpace(lines[i], width)
 	}
 	return strings.Join(lines, "\n")
 }

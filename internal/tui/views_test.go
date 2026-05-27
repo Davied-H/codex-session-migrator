@@ -181,6 +181,23 @@ func TestProjectsRenderOnlyProjectName(t *testing.T) {
 	}
 }
 
+func TestProjectsRenderChildItemsIndented(t *testing.T) {
+	m := testModel(96, 24)
+	m.focus = focusProjects
+	m.projects = []projectRow{
+		{Key: allProjectsKey, Name: "全部项目", Count: 4},
+		{Key: "/repo/app", Name: "app", Root: "/repo/app", Count: 2},
+	}
+
+	view := xansi.Strip(m.renderProjects(40, 8))
+	if !strings.Contains(view, "› 全部项目") {
+		t.Fatalf("top-level project row should keep base indent: %q", view)
+	}
+	if !strings.Contains(view, "    app") {
+		t.Fatalf("child project row should be indented: %q", view)
+	}
+}
+
 func TestFocusedPanelTitleIsHighlighted(t *testing.T) {
 	m := testModel(100, 28)
 	m.focus = focusProjects
@@ -646,7 +663,10 @@ func TestSessionRowsGroupByDateAndIndentTimeBeforeTitle(t *testing.T) {
 	if !strings.Contains(view, "时间") || !strings.Contains(view, "标题") || !strings.Contains(view, date) {
 		t.Fatalf("session list should show time/title headers: %q", view)
 	}
-	if !strings.Contains(view, "[ ] "+updated+" "+title) {
+	if !strings.Contains(view, "─ "+date) {
+		t.Fatalf("session date group should be visually marked: %q", view)
+	}
+	if !strings.Contains(view, "    [ ] "+updated+"  "+title) {
 		t.Fatalf("session row should show indented time before title: %q", view)
 	}
 }
