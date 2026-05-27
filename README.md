@@ -36,6 +36,10 @@ codex-session-migrator -ids <thread-id> -to sub2api -mode clone -dry-run
 codex-session-migrator -rollback <snapshot-dir-or-name>
 ```
 
+演示界面：
+
+![Codex Session Migrator 演示](docs/demo/codex-session-migrator-demo.png)
+
 常用键：
 
 - `Tab` / `p` / `g`：切换 Providers、Projects、Sessions 焦点
