@@ -395,7 +395,16 @@ func TestDemoModeBlocksRealSessionActions(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("demo migrate should not return a command")
 	}
-	if !strings.Contains(m.message, "演示模式不会迁移真实会话") {
+	if !m.migrateConfirm || m.migrateCount != 1 {
+		t.Fatalf("demo migrate should open confirm for one session: confirm=%v count=%d", m.migrateConfirm, m.migrateCount)
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("demo migrate apply should not return a command")
+	}
+	if !strings.Contains(m.message, "演示 apply 完成") || !strings.Contains(m.message, "未修改数据库") {
 		t.Fatalf("demo migrate message = %q", m.message)
 	}
 
@@ -406,6 +415,59 @@ func TestDemoModeBlocksRealSessionActions(t *testing.T) {
 	}
 	if !strings.Contains(m.message, "演示模式不打开真实 Markdown") {
 		t.Fatalf("demo open message = %q", m.message)
+	}
+}
+
+func TestDemoModeSupportsDryRunSearchAndSettings(t *testing.T) {
+	m := testModel(120, 28)
+	m.demoMode = true
+	m.focus = focusSessions
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("demo dry-run should not return a command")
+	}
+	if !strings.Contains(m.message, "演示 dry-run") || !strings.Contains(m.message, "未修改数据库") {
+		t.Fatalf("demo dry-run message = %q", m.message)
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("demo search should not index real rollouts")
+	}
+	if !m.searchOpen || len(m.searchResults) == 0 {
+		t.Fatalf("demo search should open with mock results: open=%v results=%d", m.searchOpen, len(m.searchResults))
+	}
+	for _, r := range []rune("登录") {
+		updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+		if cmd != nil {
+			t.Fatal("typing in demo search should not return a command")
+		}
+	}
+	if len(m.searchResults) != 1 || m.searchResults[0].Thread.ID != "demo-001" {
+		t.Fatalf("demo search results = %+v, want demo-001", m.searchResults)
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("enter in demo search should not open markdown")
+	}
+	if m.searchOpen || m.search != "登录" || !strings.Contains(m.message, "演示模式已应用搜索") {
+		t.Fatalf("demo search state: open=%v search=%q message=%q", m.searchOpen, m.search, m.message)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	m = updated.(Model)
+	if !m.settingsOpen {
+		t.Fatal("demo settings should open")
+	}
+	m.settingsCursor = 4
+	m.activateSetting()
+	if !strings.Contains(m.message, "演示模式不会清理真实归档会话") {
+		t.Fatalf("demo clear archived setting message = %q", m.message)
 	}
 }
 
@@ -428,8 +490,62 @@ func TestClearConfirmModalFits(t *testing.T) {
 	}
 }
 
-func TestMigrateConfirmModalFits(t *testing.T) {
+func TestClearConfirmTypedProviderDoesNotTriggerShortcuts(t *testing.T) {
 	m := testModel(90, 24)
+	m.clearConfirm = true
+	m.clearLabel = "provider openai"
+	m.clearCount = 42
+	m.clearExpected = "openai"
+
+	for _, r := range "openai" {
+		updated, cmd := m.updateClearConfirmKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+		if cmd != nil {
+			t.Fatalf("typing %q should not execute delete", r)
+		}
+		if !m.clearConfirm {
+			t.Fatalf("typing %q closed clear confirmation", r)
+		}
+	}
+	if m.clearInput != "openai" {
+		t.Fatalf("clear input = %q, want openai", m.clearInput)
+	}
+
+	updated, cmd := m.updateClearConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("enter after matching provider should execute delete")
+	}
+	if m.clearConfirm {
+		t.Fatal("enter after matching provider should close clear confirmation")
+	}
+}
+
+func TestErrorModalIsProminentAndRed(t *testing.T) {
+	m := testModel(100, 28)
+	m.message = "stale status"
+	m.showError("迁移失败", "clone requires Codex Desktop to be stopped before apply")
+
+	view := m.View()
+	plain := xansi.Strip(view)
+	if !strings.Contains(plain, "ERROR") || !strings.Contains(plain, "迁移失败") {
+		t.Fatalf("error modal missing title: %q", plain)
+	}
+	if !strings.Contains(plain, "clone requires Codex Desktop to be stopped before apply") {
+		t.Fatalf("error modal missing body: %q", plain)
+	}
+	if strings.Contains(plain, "stale status") {
+		t.Fatalf("error modal should clear stale status message: %q", plain)
+	}
+	if !strings.Contains(view, errorBodyStyle.Render("clone requires Codex Desktop to be stopped before apply")) {
+		t.Fatalf("error body should be rendered with error style: %q", view)
+	}
+	assertViewFitsWidth(t, view, m.width)
+}
+
+func TestMigrateConfirmModalFits(t *testing.T) {
+	m := testModel(110, 30)
+	m.mode = migrate.ModeRetag
 	m.migrateConfirm = true
 	m.migrateLabel = "selected sessions"
 	m.migrateCount = 3
@@ -439,7 +555,7 @@ func TestMigrateConfirmModalFits(t *testing.T) {
 		t.Fatalf("migrate modal height = %d, want <= %d", got, m.height)
 	}
 	assertViewFitsWidth(t, view, m.width)
-	for _, want := range []string{"确认操作", "selected sessions", "3", "openai", "sub2api", "retag"} {
+	for _, want := range []string{"迁移 已选会话", "来源", "openai", "目标", "sub2api", "模式", "retag 原会话 ID", "将更新", "预览", "执行", "取消"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("migrate modal missing %q: %q", want, view)
 		}
@@ -447,17 +563,32 @@ func TestMigrateConfirmModalFits(t *testing.T) {
 }
 
 func TestCloneConfirmModalNamesCloneAction(t *testing.T) {
-	m := testModel(90, 24)
+	m := testModel(110, 30)
 	m.mode = migrate.ModeClone
 	m.migrateConfirm = true
 	m.migrateLabel = "selected sessions"
 	m.migrateCount = 3
 
 	view := m.View()
-	for _, want := range []string{"克隆 Sessions", "将克隆 3 条 session", "保留项目归属", "确认克隆"} {
+	for _, want := range []string{"克隆 已选会话", "clone 为新会话 ID", "创建新的 rollout 文件", "session_index.jsonl", "执行"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("clone modal missing %q: %q", want, view)
 		}
+	}
+}
+
+func TestMigrateConfirmDryRunShortcut(t *testing.T) {
+	m := testModel(110, 30)
+	m.migrateConfirm = true
+	m.migrateIDs = []string{m.sessions[0].ID}
+
+	updated, cmd := m.updateMigrateConfirmKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("dry-run shortcut should run synchronously without returning command")
+	}
+	if m.migrateConfirm {
+		t.Fatal("dry-run shortcut should close confirm modal")
 	}
 }
 
@@ -466,6 +597,7 @@ func TestMigrationTargetUsesSelectedOrCurrentSession(t *testing.T) {
 	m.sessions = append(m.sessions, codex.Thread{ID: "second", ModelProvider: "openai"})
 	m.allSessions = m.sessions
 	m.cursorS = 1
+	m.focus = focusSessions
 
 	label, ids := m.migrationTarget()
 	if label != "current session second" || len(ids) != 1 || ids[0] != "second" {
@@ -476,6 +608,83 @@ func TestMigrationTargetUsesSelectedOrCurrentSession(t *testing.T) {
 	label, ids = m.migrationTarget()
 	if label != "selected sessions" || len(ids) != 1 || ids[0] != m.sessions[0].ID {
 		t.Fatalf("selected migration target = %q %+v, want selected first session", label, ids)
+	}
+}
+
+func TestMigrationTargetUsesFocusedProviderSessions(t *testing.T) {
+	m := testModel(100, 28)
+	m.providers = []providerRow{
+		{Name: "openai", Total: 2},
+		{Name: "sub2api", Total: 1},
+	}
+	m.allSessions = []codex.Thread{
+		{ID: "openai-one", ModelProvider: "openai", UpdatedAt: 3},
+		{ID: "openai-two", ModelProvider: "openai", UpdatedAt: 2},
+		{ID: "sub2api-one", ModelProvider: "sub2api", UpdatedAt: 1},
+	}
+	m.sessions = m.allSessions[:2]
+	m.selected = map[string]bool{"sub2api-one": true}
+	m.focus = focusProviders
+
+	label, ids := m.migrationTarget()
+	if label != "provider openai" || len(ids) != 2 || ids[0] != "openai-one" || ids[1] != "openai-two" {
+		t.Fatalf("provider migration target = %q %+v, want focused provider sessions", label, ids)
+	}
+}
+
+func TestProviderSpaceTogglesSourceSelection(t *testing.T) {
+	m := testModel(100, 28)
+	m.providers = []providerRow{
+		{Name: "openai", Total: 2},
+		{Name: "sub2api", Total: 1},
+	}
+	m.focus = focusProviders
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+	if !m.selectedProviders["openai"] {
+		t.Fatalf("space should select focused provider: %+v", m.selectedProviders)
+	}
+	view := xansi.Strip(m.renderProviders(40, 8))
+	if !strings.Contains(view, "[x] openai") {
+		t.Fatalf("selected provider should render checkbox: %q", view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+	if m.selectedProviders["openai"] {
+		t.Fatalf("second space should deselect focused provider: %+v", m.selectedProviders)
+	}
+}
+
+func TestMigrationTargetUsesSelectedProviders(t *testing.T) {
+	m := testModel(100, 28)
+	m.providers = []providerRow{
+		{Name: "openai", Total: 2},
+		{Name: "sub2api", Total: 1},
+		{Name: "custom", Total: 1},
+	}
+	m.allSessions = []codex.Thread{
+		{ID: "openai-one", ModelProvider: "openai", UpdatedAt: 4},
+		{ID: "openai-two", ModelProvider: "openai", UpdatedAt: 3},
+		{ID: "sub2api-one", ModelProvider: "sub2api", UpdatedAt: 2},
+		{ID: "custom-one", ModelProvider: "custom", UpdatedAt: 1},
+	}
+	m.selectedProviders = map[string]bool{"openai": true, "sub2api": true}
+	m.focus = focusProviders
+	m.cursorP = 2
+
+	label, ids := m.migrationTarget()
+	if label != "providers openai, sub2api" || len(ids) != 3 {
+		t.Fatalf("provider merge target = %q %+v, want openai/sub2api sessions", label, ids)
+	}
+	for _, id := range ids {
+		if id == "custom-one" {
+			t.Fatalf("provider merge target included custom-one: %+v", ids)
+		}
+	}
+	if got := m.providerSourceLabel(); got != "openai, sub2api" {
+		t.Fatalf("provider source label = %q", got)
 	}
 }
 
@@ -614,7 +823,7 @@ func TestSettingsModalFitsAndShowsCommonConfig(t *testing.T) {
 		t.Fatalf("settings height = %d, want <= %d", got, m.height)
 	}
 	assertViewFitsWidth(t, view, m.width)
-	for _, want := range []string{"Settings", "配置", "状态", "说明", "显示归档", "显示子代理", "目标 Provider", "迁移模式", "清理归档"} {
+	for _, want := range []string{"Settings", "配置", "状态", "说明", "显示归档", "显示子代理", "目标 Provider", "迁移模式", "清理归档", "清理子代理"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("settings missing %q: %q", want, view)
 		}
@@ -623,6 +832,60 @@ func TestSettingsModalFitsAndShowsCommonConfig(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("settings modal should keep main view visible, missing %q: %q", want, view)
 		}
+	}
+}
+
+func TestNewShowsOnboardingUntilCompleted(t *testing.T) {
+	paths := newTUITestDB(t)
+	m := New(paths)
+	if !m.onboardingOpen {
+		t.Fatal("first launch should open onboarding")
+	}
+
+	var updated tea.Model = m
+	var cmd tea.Cmd
+	for i := 0; i < len(onboardingSteps()); i++ {
+		updated, cmd = updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd != nil {
+			t.Fatal("onboarding enter should not return a command")
+		}
+	}
+	m = updated.(Model)
+	if m.onboardingOpen {
+		t.Fatal("final onboarding step should close the modal")
+	}
+
+	next := New(paths)
+	if next.onboardingOpen {
+		t.Fatal("completed onboarding should not reopen on next launch")
+	}
+}
+
+func TestOnboardingModalFitsAndCanBeReopened(t *testing.T) {
+	m := testModel(86, 22)
+	m.paths = codex.NewPaths(t.TempDir())
+	m.onboardingOpen = true
+
+	view := m.View()
+	if got := lipgloss.Height(view); got > m.height {
+		t.Fatalf("onboarding height = %d, want <= %d", got, m.height)
+	}
+	assertViewFitsWidth(t, view, m.width)
+	for _, want := range []string{"首次使用引导", "先确认来源 Provider", "Enter"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("onboarding missing %q: %q", want, view)
+		}
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.onboardingOpen {
+		t.Fatal("Esc should close onboarding")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = updated.(Model)
+	if !m.onboardingOpen || m.onboardingStep != 0 {
+		t.Fatalf("? should reopen onboarding at first step: open=%v step=%d", m.onboardingOpen, m.onboardingStep)
 	}
 }
 
@@ -644,6 +907,39 @@ func TestSettingsClearArchivedOpensConfirmForArchivedSessions(t *testing.T) {
 	}
 	if m.clearExpected != "" {
 		t.Fatalf("clear archived should not require typed provider confirmation: %q", m.clearExpected)
+	}
+}
+
+func TestSettingsClearSubagentsOpensConfirmForSubagentSessions(t *testing.T) {
+	paths := newTUITestDB(t)
+	m := New(paths)
+	m.settingsCursor = 5
+
+	m.activateSetting()
+
+	if !m.clearConfirm {
+		t.Fatal("clear subagents should open delete confirmation")
+	}
+	if m.clearScope != "subagents" || m.clearLabel != "sub-agent sessions" {
+		t.Fatalf("clear subagents scope = %q label = %q", m.clearScope, m.clearLabel)
+	}
+	if m.clearCount != 2 || len(m.clearIDs) != 2 {
+		t.Fatalf("clear subagents ids = %d %+v, want two subagents", m.clearCount, m.clearIDs)
+	}
+	got := map[string]bool{}
+	for _, id := range m.clearIDs {
+		got[id] = true
+	}
+	for _, id := range []string{"subagent-source", "subagent-thread-source"} {
+		if !got[id] {
+			t.Fatalf("clear subagents missing %s: %+v", id, m.clearIDs)
+		}
+	}
+	if got["active"] || got["archived"] {
+		t.Fatalf("clear subagents included non-subagent sessions: %+v", m.clearIDs)
+	}
+	if m.clearExpected != "" {
+		t.Fatalf("clear subagents should not require typed provider confirmation: %q", m.clearExpected)
 	}
 }
 
@@ -821,6 +1117,34 @@ func TestArchivedToggleReloadsVisibleData(t *testing.T) {
 	}
 }
 
+func TestSubagentToggleReloadsProviderCounts(t *testing.T) {
+	paths := newTUITestDB(t)
+	m := New(paths)
+
+	if m.includeS {
+		t.Fatal("subagent sessions should be hidden by default")
+	}
+	if got := m.providers[0].Total; got != 1 {
+		t.Fatalf("provider total = %d, want only user sessions", got)
+	}
+	if got := len(m.allSessions); got != 1 {
+		t.Fatalf("allSessions = %d, want only user sessions", got)
+	}
+
+	m.settingsCursor = 1
+	m.activateSetting()
+
+	if !m.includeS {
+		t.Fatal("subagent sessions should be visible after toggle")
+	}
+	if got := m.providers[0].Total; got != 3 {
+		t.Fatalf("provider total after subagent toggle = %d, want user plus subagents", got)
+	}
+	if got := len(m.allSessions); got != 3 {
+		t.Fatalf("allSessions after subagent toggle = %d, want user plus subagents", got)
+	}
+}
+
 func newTUITestDB(t *testing.T) codex.Paths {
 	t.Helper()
 	home := t.TempDir()
@@ -852,21 +1176,30 @@ func newTUITestDB(t *testing.T) codex.Paths {
 	}
 	activeRollout := filepath.Join(home, "active.jsonl")
 	archivedRollout := filepath.Join(home, "archived.jsonl")
-	if err := os.WriteFile(activeRollout, []byte("{}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(archivedRollout, []byte("{}\n"), 0o600); err != nil {
-		t.Fatal(err)
+	subagentSourceRollout := filepath.Join(home, "subagent-source.jsonl")
+	subagentThreadSourceRollout := filepath.Join(home, "subagent-thread-source.jsonl")
+	for _, path := range []string{activeRollout, archivedRollout, subagentSourceRollout, subagentThreadSourceRollout} {
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	_, err = db.Exec(`insert into threads values
 		('active', ?, 1, 2, 2, '', 'openai', '/tmp/project', 'active title', 0, 'user', ''),
-		('archived', ?, 1, 3, 3, '', 'openai', '/tmp/project', 'archived title', 1, 'user', '')`, activeRollout, archivedRollout)
+		('archived', ?, 1, 3, 3, '', 'openai', '/tmp/project', 'archived title', 1, 'user', ''),
+		('subagent-source', ?, 1, 4, 4, '{"subagent":{"name":"worker"}}', 'openai', '/tmp/project', 'subagent source title', 0, '', ''),
+		('subagent-thread-source', ?, 1, 5, 5, '', 'openai', '/tmp/project', 'subagent thread source title', 0, 'subagent', '')`,
+		activeRollout, archivedRollout, subagentSourceRollout, subagentThreadSourceRollout)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(paths.GlobalState, []byte(`{
 		"projectless-thread-ids": [],
-		"thread-workspace-root-hints": {"active": "/tmp/project", "archived": "/tmp/project"}
+		"thread-workspace-root-hints": {
+			"active": "/tmp/project",
+			"archived": "/tmp/project",
+			"subagent-source": "/tmp/project",
+			"subagent-thread-source": "/tmp/project"
+		}
 	}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -899,15 +1232,16 @@ func testModel(width, height int) Model {
 			HasModelProvider: true,
 			Integrity:        "ok",
 		},
-		providers:   []providerRow{{Name: "openai", Total: 1}},
-		projects:    []projectRow{{Key: allProjectsKey, Name: "全部项目", Count: 1}},
-		allSessions: threads,
-		sessions:    threads,
-		selected:    map[string]bool{},
-		target:      "sub2api",
-		mode:        migrate.ModeRetag,
-		includeA:    true,
-		width:       width,
-		height:      height,
+		providers:         []providerRow{{Name: "openai", Total: 1}},
+		projects:          []projectRow{{Key: allProjectsKey, Name: "全部项目", Count: 1}},
+		allSessions:       threads,
+		sessions:          threads,
+		selected:          map[string]bool{},
+		selectedProviders: map[string]bool{},
+		target:            "sub2api",
+		mode:              migrate.ModeClone,
+		includeA:          true,
+		width:             width,
+		height:            height,
 	}
 }

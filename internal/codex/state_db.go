@@ -38,6 +38,7 @@ type Diagnostics struct {
 	CodexRunning     bool
 	Writable         bool
 	Counts           []ProviderCount
+	SubagentCount    int
 }
 
 func OpenDB(paths Paths) (*sql.DB, error) {
@@ -67,6 +68,7 @@ func Diagnose(paths Paths) (Diagnostics, error) {
 	d.HasModelProvider, _ = HasColumn(db, "threads", "model_provider")
 	d.Integrity, _ = Integrity(db)
 	d.Counts, _ = ProviderCounts(db)
+	d.SubagentCount, _ = CountSubagentThreads(db)
 	return d, nil
 }
 
@@ -174,6 +176,36 @@ func ListArchivedThreads(db *sql.DB) ([]Thread, error) {
 	return out, rows.Err()
 }
 
+func ListSubagentThreads(db *sql.DB) ([]Thread, error) {
+	rows, err := db.Query(`select id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, archived, coalesce(thread_source,''), preview
+		from threads where (thread_source is not null and thread_source != '' and thread_source != 'user')
+			or source like '{"subagent":%'
+		order by updated_at_ms desc, updated_at desc, id desc`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Thread
+	for rows.Next() {
+		var t Thread
+		var archived int
+		if err := rows.Scan(&t.ID, &t.RolloutPath, &t.CreatedAt, &t.UpdatedAt, &t.Source, &t.ModelProvider, &t.CWD, &t.Title, &archived, &t.ThreadSource, &t.Preview); err != nil {
+			return nil, err
+		}
+		t.Archived = archived != 0
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func CountSubagentThreads(db *sql.DB) (int, error) {
+	var count int
+	err := db.QueryRow(`select count(*) from threads
+		where (thread_source is not null and thread_source != '' and thread_source != 'user')
+			or source like '{"subagent":%'`).Scan(&count)
+	return count, err
+}
+
 func GetThread(db *sql.DB, id string) (Thread, error) {
 	rows, err := db.Query(`select id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, archived, coalesce(thread_source,''), preview from threads where id = ?`, id)
 	if err != nil {
@@ -270,6 +302,80 @@ func DeleteThreads(tx *sql.Tx, ids []string) error {
 		}
 	}
 	return nil
+}
+
+func ReinsertThreads(tx *sql.Tx, ids []string) error {
+	for _, id := range ids {
+		if err := reinsertThread(tx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ReorderProviderThreads(tx *sql.Tx, provider string) error {
+	rows, err := tx.Query(`select id from threads where model_provider = ?
+		order by case when updated_at_ms is null or updated_at_ms = 0 then updated_at * 1000 else updated_at_ms end asc,
+			updated_at asc,
+			id asc`, provider)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return ReinsertThreads(tx, ids)
+}
+
+func reinsertThread(tx *sql.Tx, id string) error {
+	rows, err := tx.Query(`select * from threads where id = ?`, id)
+	if err != nil {
+		return err
+	}
+	cols, err := rows.Columns()
+	if err != nil {
+		rows.Close()
+		return err
+	}
+	if !rows.Next() {
+		rows.Close()
+		return sql.ErrNoRows
+	}
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	res, err := tx.Exec(`delete from threads where id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return fmt.Errorf("expected to delete 1 row for %s, deleted %d", id, n)
+	}
+	holders := make([]string, len(cols))
+	for i := range holders {
+		holders[i] = "?"
+	}
+	_, err = tx.Exec(`insert into threads (`+strings.Join(cols, ",")+`) values (`+strings.Join(holders, ",")+`)`, vals...)
+	return err
 }
 
 func (t Thread) UpdatedString() string {

@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex Session Migrator TUI - 线框图（MVP 评审版）</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", -apple-system, sans-serif;
+    background: #f5f5f5;
+    margin: 0;
+    padding: 36px 20px;
+    color: #222;
+  }
+  .page {
+    max-width: 1240px;
+    margin: 0 auto;
+  }
+  .page-title {
+    margin: 0 0 8px;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+  .page-subtitle {
+    margin: 0 0 24px;
+    font-size: 13px;
+    color: #666;
+  }
+  .layout-with-rail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: 22px;
+    align-items: start;
+  }
+  .canvas {
+    background: #fff;
+    border: 1.5px solid #222;
+    padding: 22px;
+  }
+  .section {
+    border: 1.5px solid #222;
+    padding: 16px;
+    margin-bottom: 20px;
+    position: relative;
+  }
+  .section:last-child { margin-bottom: 0; }
+  .section-title {
+    font-size: 16px;
+    font-weight: 700;
+    margin: 0 0 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #222;
+  }
+  .sub {
+    border: 1px solid #555;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  .sub:last-child { margin-bottom: 0; }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .grid-4 {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .terminal {
+    border: 1.5px solid #222;
+    background: #fff;
+  }
+  .terminal-title {
+    border-bottom: 1px solid #222;
+    padding: 9px 12px;
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .terminal-body {
+    padding: 10px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .tui-grid {
+    display: grid;
+    grid-template-columns: 28% 1fr;
+    gap: 0;
+    border: 1px solid #555;
+  }
+  .tui-col {
+    min-height: 270px;
+    border-right: 1px solid #555;
+  }
+  .tui-col:last-child { border-right: 0; }
+  .tui-head {
+    padding: 7px 9px;
+    border-bottom: 1px solid #555;
+    font-weight: 700;
+  }
+  .tui-row {
+    padding: 6px 9px;
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px dashed #aaa;
+    min-height: 28px;
+  }
+  .tui-row:last-child { border-bottom: 0; }
+  .tui-row.active {
+    outline: 2px solid #222;
+    outline-offset: -2px;
+    font-weight: 700;
+  }
+  .tui-row.selected::before {
+    content: "[x] ";
+    white-space: pre;
+    font-weight: 700;
+  }
+  .tui-row.unselected::before {
+    content: "[ ] ";
+    white-space: pre;
+  }
+  .detail-pane {
+    border: 1px solid #555;
+    border-top: 0;
+    padding: 10px;
+    display: grid;
+    grid-template-columns: 120px minmax(0, 1fr);
+    gap: 6px 12px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 12px;
+  }
+  .actions {
+    border: 1px solid #555;
+    border-top: 0;
+    padding: 9px 10px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .pill-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .pill {
+    border: 1px solid #555;
+    padding: 3px 8px;
+    font-size: 12px;
+    min-height: 24px;
+  }
+  .pill.strong {
+    border-width: 2px;
+    font-weight: 700;
+  }
+  .box {
+    border: 1px solid #555;
+    padding: 12px;
+    text-align: center;
+    font-size: 13px;
+    min-height: 70px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+  }
+  .box.strong {
+    border-width: 2px;
+    min-height: 86px;
+  }
+  .box .num {
+    font-size: 20px;
+    font-weight: 700;
+  }
+  .box .lbl {
+    font-size: 12px;
+    color: #444;
+    margin-top: 4px;
+  }
+  .modal-overlay {
+    background: #f5f5f5;
+    border: 1px dashed #aaa;
+    padding: 34px 16px 16px;
+    position: relative;
+  }
+  .modal-overlay::before {
+    content: "阻塞式确认层";
+    position: absolute;
+    top: 8px;
+    left: 12px;
+    color: #777;
+    font-size: 11px;
+  }
+  .modal {
+    background: #fff;
+    border: 1.5px solid #222;
+    max-width: 620px;
+    margin: 0 auto;
+  }
+  .modal-header {
+    border-bottom: 1px solid #222;
+    padding: 11px 14px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-weight: 700;
+  }
+  .modal-body { padding: 14px; }
+  .summary-list {
+    margin: 0;
+    padding-left: 20px;
+    line-height: 1.65;
+  }
+  .button-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+  }
+  .button {
+    border: 1.5px solid #222;
+    padding: 7px 14px;
+    min-width: 96px;
+    text-align: center;
+    font-weight: 700;
+  }
+  .button.secondary {
+    border: 1px solid #555;
+    font-weight: 400;
+  }
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .table th,
+  .table td {
+    border: 1px solid #555;
+    padding: 7px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .table th { font-weight: 700; }
+  .progress {
+    height: 10px;
+    border: 1px solid #555;
+    background: #fff;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 66%;
+    background: repeating-linear-gradient(45deg, #555 0 3px, #fff 3px 6px);
+  }
+  .stack { display: grid; gap: 12px; }
+  .anno-tag {
+    display: inline-block;
+    background: #fffbcc;
+    border: 1px solid #d4b800;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-weight: 400;
+    color: #a37500;
+    margin-left: 8px;
+  }
+  .note,
+  .note-card {
+    background: #fffbcc;
+    border: 1px solid #d4b800;
+    color: #6a4a00;
+    padding: 10px 12px;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .note {
+    margin: -10px 0 20px;
+  }
+  .note b,
+  .note-card b,
+  .page-meta b {
+    color: #a37500;
+  }
+  .note-card {
+    margin-bottom: 12px;
+  }
+  .note-card:last-child { margin-bottom: 0; }
+  .note-h {
+    display: block;
+    color: #a37500;
+    font-weight: 700;
+    margin-bottom: 5px;
+    padding-bottom: 5px;
+    border-bottom: 1px dashed #d4b800;
+  }
+  .note-card ol,
+  .note-card ul,
+  .note ol,
+  .note ul,
+  .page-meta ol {
+    margin: 4px 0 0 18px;
+    padding: 0;
+  }
+  .note-card li,
+  .note li,
+  .page-meta li {
+    margin-bottom: 3px;
+  }
+  .page-meta {
+    margin-top: 20px;
+    padding: 12px 16px;
+    background: #fffbcc;
+    border: 1px dashed #d4b800;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #6a4a00;
+  }
+  .muted { color: #777; }
+  .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+  @media (max-width: 980px) {
+    body { padding: 24px 12px; }
+    .layout-with-rail { grid-template-columns: 1fr; }
+    .notes-rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .note-card { margin-bottom: 0; }
+    .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 700px) {
+    .canvas { padding: 14px; }
+    .section { padding: 12px; }
+    .grid-2,
+    .grid-3,
+    .grid-4,
+    .tui-grid {
+      grid-template-columns: 1fr;
+    }
+    .tui-col { border-right: 0; border-bottom: 1px solid #555; }
+    .tui-col:last-child { border-bottom: 0; }
+    .detail-pane { grid-template-columns: 1fr; }
+    .notes-rail { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-title">Codex Session Migrator TUI - 线框图（MVP 评审版）</div>
+  <div class="page-subtitle">基于 2026/05/27 PRD · 用于 MVP 范围、风险门槛与 TUI 信息架构评审</div>
+
+  <div class="layout-with-rail">
+    <main class="canvas">
+      <div class="section">
+        <div class="section-title">1. 启动诊断与主界面 <span class="anno-tag">默认落点</span></div>
+        <div class="terminal">
+          <div class="terminal-title">
+            <span>Codex Session Migrator</span>
+            <span class="muted">q 退出 · ? 帮助</span>
+          </div>
+          <div class="terminal-body">
+            <div class="pill-row">
+              <span class="pill strong">Current: sub2api</span>
+              <span class="pill">Codex: running</span>
+              <span class="pill">DB: ok</span>
+              <span class="pill">Writable: yes</span>
+              <span class="pill">Mode: retag</span>
+            </div>
+            <div class="tui-grid">
+              <div class="tui-col">
+                <div class="tui-head">Providers</div>
+                <div class="tui-row active"><span>&gt; openai</span><span>XXXX</span></div>
+                <div class="tui-row"><span>&nbsp; sub2api</span><span>XX</span></div>
+                <div class="tui-row"><span>&nbsp; custom</span><span>XXX</span></div>
+                <div class="tui-row"><span>&nbsp; archived</span><span>XX</span></div>
+              </div>
+              <div class="tui-col">
+                <div class="tui-head">Sessions</div>
+                <div class="tui-row selected"><span>今天 codex 又更新什么了？</span><span>YYYY/MM/DD HH:mm</span></div>
+                <div class="tui-row unselected"><span>设计 Codex 会话迁移工具</span><span>YYYY/MM/DD HH:mm</span></div>
+                <div class="tui-row selected"><span>比较 GEO 与 SEO 优化</span><span>YYYY/MM/DD HH:mm</span></div>
+                <div class="tui-row unselected"><span>整理发布前检查清单</span><span>YYYY/MM/DD HH:mm</span></div>
+                <div class="tui-row unselected"><span>搜索结果 / cwd 过滤命中项</span><span>YYYY/MM/DD HH:mm</span></div>
+              </div>
+            </div>
+            <div class="detail-pane">
+              <div>id</div><div>019e6717-XXXX-XXXX-XXXX-XXXXXXXXXXXX</div>
+              <div>cwd</div><div>/Users/dong/Documents/Codex</div>
+              <div>rollout</div><div>exists · session_meta provider=openai</div>
+              <div>updated</div><div>YYYY/MM/DD HH:mm</div>
+            </div>
+            <div class="actions">
+              Space select · / search · p provider · a archived · s subagent · d dry-run · m migrate · c clone mode · b backup · r rollback · v detail
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="note">
+        <b>说明：</b>首屏只读诊断先行，避免用户一进入工具就触发写操作。Header 将 provider、Codex 进程、DB、写权限和迁移模式放在同一行，用于决定后续按钮是否可用。
+      </div>
+
+      <div class="section">
+        <div class="section-title">2. 浏览与筛选 <span class="anno-tag">批量选择入口</span></div>
+        <div class="grid-4">
+          <div class="box strong"><div class="num">Provider</div><div class="lbl">按来源 provider 分组</div></div>
+          <div class="box"><div class="num">CWD</div><div class="lbl">按项目根目录过滤</div></div>
+          <div class="box"><div class="num">Title</div><div class="lbl">标题 / 内容搜索</div></div>
+          <div class="box"><div class="num">Date</div><div class="lbl">更新时间排序 / 范围</div></div>
+        </div>
+        <div class="sub" style="margin-top:12px">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>过滤项</th>
+                <th>默认值</th>
+                <th>可切换项</th>
+                <th>批量动作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>archived</td>
+                <td>隐藏</td>
+                <td>按 a 显示 / 隐藏</td>
+                <td>批量迁移确认中汇总 included 数量</td>
+              </tr>
+              <tr>
+                <td>subagent</td>
+                <td>隐藏</td>
+                <td>按 s 显示 / 隐藏</td>
+                <td>默认 excluded，避免误迁移系统线程</td>
+              </tr>
+              <tr>
+                <td>搜索结果</td>
+                <td>空查询</td>
+                <td>按 / 打开搜索</td>
+                <td>按 a 全选当前过滤结果</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="note">
+        <b>说明：</b>批量迁移必须从“当前可见集合”产生，用户能明确理解自己选中了哪些会话。筛选状态应同步进入确认框，防止从列表到确认阶段信息丢失。
+      </div>
+
+      <div class="section">
+        <div class="section-title">3. Retag 迁移确认 <span class="anno-tag">默认推荐</span></div>
+        <div class="modal-overlay">
+          <div class="modal">
+            <div class="modal-header">
+              <span>Migrate selected sessions</span>
+              <span>Esc</span>
+            </div>
+            <div class="modal-body">
+              <div class="grid-2">
+                <div class="sub">
+                  <b>From</b><br>
+                  openai
+                </div>
+                <div class="sub">
+                  <b>To</b><br>
+                  sub2api
+                </div>
+              </div>
+              <div class="sub">
+                <b>Mode</b><br>
+                retag original thread id
+              </div>
+              <div class="sub">
+                <b>This will update</b>
+                <ol class="summary-list">
+                  <li>state_5.sqlite threads.model_provider</li>
+                  <li>rollout session_meta.model_provider</li>
+                  <li>snapshot manifest for rollback</li>
+                </ol>
+              </div>
+              <div class="button-row">
+                <div class="button secondary">Dry Run</div>
+                <div class="button">Apply</div>
+                <div class="button secondary">Cancel</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="note">
+        <b>说明：</b>Retag 是默认模式，因为它不生成新 thread id，也不需要补全局索引。文案必须明确“原 provider 下不再显示该会话”，但不把它包装成失败。
+      </div>
+
+      <div class="section">
+        <div class="section-title">4. Clone 模式阻断与二次确认 <span class="anno-tag">高风险路径</span></div>
+        <div class="modal-overlay">
+          <div class="modal">
+            <div class="modal-header">
+              <span>Batch migrate selected sessions</span>
+              <span>clone mode</span>
+            </div>
+            <div class="modal-body">
+              <div class="grid-3">
+                <div class="box"><div class="num">XX</div><div class="lbl">Selected sessions</div></div>
+                <div class="box"><div class="num">X</div><div class="lbl">Archived included</div></div>
+                <div class="box strong"><div class="num">Codex running</div><div class="lbl">Apply disabled</div></div>
+              </div>
+              <div class="sub" style="margin-top:12px">
+                <b>Writes</b>
+                <ol class="summary-list">
+                  <li>state_5.sqlite new thread records</li>
+                  <li>session_index.jsonl appended records</li>
+                  <li>rollout copies with replaced thread id</li>
+                  <li>.codex-global-state.json top-level indexes</li>
+                </ol>
+              </div>
+              <div class="sub">
+                <b>Blocking rule</b><br>
+                Clone writes global state. Codex Desktop must be stopped before Apply can be enabled.
+              </div>
+              <div class="button-row">
+                <div class="button secondary">Dry Run</div>
+                <div class="button secondary">Apply disabled</div>
+                <div class="button secondary">Cancel</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="note">
+        <b>说明：</b>Clone 的风险来自 Codex Desktop 运行中会把内存里的全局状态覆盖回磁盘。TUI 不能只提示风险，必须在 Codex running 时禁用 Apply。
+      </div>
+
+      <div class="section">
+        <div class="section-title">5. Dry-run / Apply 执行反馈 <span class="anno-tag">可回滚承诺</span></div>
+        <div class="grid-2">
+          <div class="sub">
+            <div class="section-title">Dry Run Preview</div>
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Thread</th>
+                  <th>From</th>
+                  <th>To</th>
+                  <th>Writes</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>019e6717-XXXX</td>
+                  <td>openai</td>
+                  <td>sub2api</td>
+                  <td>DB, rollout</td>
+                </tr>
+                <tr>
+                  <td>01XXXXXX-XXXX</td>
+                  <td>openai</td>
+                  <td>sub2api</td>
+                  <td>DB, rollout</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="sub">
+            <div class="section-title">Apply Progress</div>
+            <div class="stack">
+              <div>Creating snapshot</div>
+              <div class="progress"><div class="progress-fill"></div></div>
+              <div>Updating SQLite</div>
+              <div>Updating rollout session_meta</div>
+              <div>Running validation: pragma integrity_check = ok</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="note">
+        <b>说明：</b>Dry-run 应展示“会写什么”，Apply 应展示“正在写哪一步”。失败时停止后续迁移并转入 rollback 提示，不能静默跳过失败项。
+      </div>
+
+      <div class="section">
+        <div class="section-title">6. Snapshot 与 Rollback <span class="anno-tag">恢复入口</span></div>
+        <div class="terminal">
+          <div class="terminal-title">
+            <span>Rollback snapshots</span>
+            <span>Codex: stopped · DB: readable</span>
+          </div>
+          <div class="terminal-body">
+            <div class="tui-row active"><span>20260527-100711-retag-019e6717XXXX-to-sub2api</span><span>single</span></div>
+            <div class="tui-row"><span>20260527-100119-batch-retag-openai-to-sub2api</span><span>batch</span></div>
+            <div class="tui-row"><span>20260527-095512-batch-clone-openai-to-sub2api</span><span>clone</span></div>
+            <div class="detail-pane">
+              <div>manifest</div><div>old id, new id, old provider, new provider, rollout path</div>
+              <div>restore</div><div>state_5.sqlite, wal, shm, session_index, global state, rollouts</div>
+              <div>require</div><div>Codex Desktop stopped before file restore</div>
+            </div>
+            <div class="actions">
+              Enter restore · v view manifest · Esc back
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page-meta">
+        <b>MVP 评审结论应确认：</b>
+        <ol>
+          <li>Retag 是默认路径，允许 Codex running 但提示刷新 / 重启后 UI 更稳定。</li>
+          <li>Clone 和 batch clone 必须在 Codex stopped 时才能 Apply，因为会写全局状态索引。</li>
+          <li>所有写操作前创建 snapshot；批量迁移每批只创建一个 batch snapshot。</li>
+          <li>确认框必须把 selected、archived、subagent、mode、writes、rollback 条件一次讲清。</li>
+          <li>验收用例以 019e6717-XXXX 会话作为单条 retag / rollback 主路径。</li>
+        </ol>
+      </div>
+    </main>
+
+    <aside class="notes-rail">
+      <div class="note-card">
+        <span class="note-h">信息架构</span>
+        <ol>
+          <li>Header 展示当前环境状态。</li>
+          <li>左侧 provider，右侧 session。</li>
+          <li>下方 detail 承接当前光标项。</li>
+          <li>Actions 固定提示快捷键。</li>
+        </ol>
+      </div>
+      <div class="note-card">
+        <span class="note-h">默认过滤</span>
+        <ol>
+          <li>archived = 0。</li>
+          <li>source = vscode。</li>
+          <li>thread_source = user。</li>
+          <li>subagent 默认不显示。</li>
+        </ol>
+      </div>
+      <div class="note-card">
+        <span class="note-h">安全分层</span>
+        <ol>
+          <li>Retag：低风险，默认推荐。</li>
+          <li>Clone：高风险，需要二次确认。</li>
+          <li>Batch：必须展示汇总与失败策略。</li>
+        </ol>
+      </div>
+      <div class="note-card">
+        <span class="note-h">写入边界</span>
+        <ol>
+          <li>不迁移 auth.json。</li>
+          <li>不修改 API key。</li>
+          <li>不读取或打印 token。</li>
+          <li>不自动关闭 Codex Desktop。</li>
+        </ol>
+      </div>
+      <div class="note-card">
+        <span class="note-h">校验规则</span>
+        <ol>
+          <li>DB provider 已变更。</li>
+          <li>rollout 首行 provider 已变更。</li>
+          <li>rollout 文件存在。</li>
+          <li>pragma integrity_check = ok。</li>
+        </ol>
+      </div>
+      <div class="note-card">
+        <span class="note-h">占位约定</span>
+        <ul>
+          <li>数量使用 XX / XXXX。</li>
+          <li>日期使用 YYYY/MM/DD。</li>
+          <li>保留验收 thread 前缀，便于评审定位。</li>
+        </ul>
+      </div>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

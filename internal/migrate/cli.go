@@ -17,22 +17,25 @@ type CLIOptions struct {
 
 func RunCLI(paths codex.Paths, opts CLIOptions) (string, error) {
 	ids := splitCSV(opts.IDsCSV)
-	if len(ids) == 0 && opts.FromProvider != "" {
+	fromProviders := splitCSV(opts.FromProvider)
+	if len(ids) == 0 && len(fromProviders) > 0 {
 		db, err := codex.OpenDB(paths)
 		if err != nil {
 			return "", err
 		}
 		defer db.Close()
-		threads, err := codex.ListThreads(db, opts.FromProvider, "", false, false, 0)
-		if err != nil {
-			return "", err
-		}
-		for _, t := range threads {
-			ids = append(ids, t.ID)
+		for _, provider := range fromProviders {
+			threads, err := codex.ListThreads(db, provider, "", false, false, 0)
+			if err != nil {
+				return "", err
+			}
+			for _, t := range threads {
+				ids = append(ids, t.ID)
+			}
 		}
 	}
 	res, err := Run(paths, Options{
-		IDs: ids, Target: opts.Target, Mode: Mode(opts.Mode), DryRun: opts.DryRun, RequireFrom: opts.FromProvider,
+		IDs: ids, Target: opts.Target, Mode: Mode(opts.Mode), DryRun: opts.DryRun, RequireFromAny: fromProviders,
 	})
 	if err != nil {
 		return "", err

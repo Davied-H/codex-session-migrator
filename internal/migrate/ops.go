@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"codex-session-migrator/internal/codex"
 )
@@ -22,12 +24,13 @@ const (
 )
 
 type Options struct {
-	IDs          []string
-	Target       string
-	Mode         Mode
-	DryRun       bool
-	RequireFrom  string
-	SnapshotName string
+	IDs            []string
+	Target         string
+	Mode           Mode
+	DryRun         bool
+	RequireFrom    string
+	RequireFromAny []string
+	SnapshotName   string
 }
 
 type Result struct {
@@ -47,6 +50,12 @@ type ClearThreadsOptions struct {
 	SnapshotName string
 }
 
+type ReorderProviderOptions struct {
+	Provider     string
+	SnapshotName string
+	DryRun       bool
+}
+
 func Run(paths codex.Paths, opts Options) (Result, error) {
 	if opts.Target == "" {
 		return Result{}, fmt.Errorf("target provider is required")
@@ -55,8 +64,9 @@ func Run(paths codex.Paths, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("at least one thread id is required")
 	}
 	if opts.Mode == "" {
-		opts.Mode = ModeRetag
+		opts.Mode = ModeClone
 	}
+	requireFrom := providerSet(append(splitCSV(opts.RequireFrom), opts.RequireFromAny...))
 	if opts.Mode == ModeClone && codex.DesktopRunning() && !opts.DryRun {
 		return Result{}, fmt.Errorf("clone requires Codex Desktop to be stopped before apply")
 	}
@@ -66,19 +76,23 @@ func Run(paths codex.Paths, opts Options) (Result, error) {
 	}
 	defer db.Close()
 
+	result := Result{}
 	threads := make([]codex.Thread, 0, len(opts.IDs))
 	for _, id := range opts.IDs {
 		t, err := codex.GetThread(db, id)
 		if err != nil {
 			return Result{}, fmt.Errorf("load thread %s: %w", id, err)
 		}
-		if opts.RequireFrom != "" && t.ModelProvider != opts.RequireFrom {
-			return Result{}, fmt.Errorf("thread %s provider is %s, not %s", id, t.ModelProvider, opts.RequireFrom)
+		if len(requireFrom) > 0 && !requireFrom[t.ModelProvider] {
+			return Result{}, fmt.Errorf("thread %s provider is %s, not one of %s", id, t.ModelProvider, providerSetLabel(requireFrom))
+		}
+		if opts.Mode == ModeRetag && t.ModelProvider == opts.Target {
+			result.Lines = append(result.Lines, fmt.Sprintf("skip retag %s -> %s %s (already target provider)", t.ModelProvider, opts.Target, t.ID))
+			continue
 		}
 		threads = append(threads, t)
 	}
 
-	result := Result{}
 	for _, t := range threads {
 		line := fmt.Sprintf("%s %s -> %s %s", opts.Mode, t.ModelProvider, opts.Target, t.ID)
 		if opts.Mode == ModeClone {
@@ -86,7 +100,7 @@ func Run(paths codex.Paths, opts Options) (Result, error) {
 		}
 		result.Lines = append(result.Lines, line)
 	}
-	if opts.DryRun {
+	if opts.DryRun || len(threads) == 0 {
 		return result, nil
 	}
 
@@ -98,6 +112,83 @@ func Run(paths codex.Paths, opts Options) (Result, error) {
 	default:
 		return Result{}, fmt.Errorf("unknown mode: %s", opts.Mode)
 	}
+}
+
+func ReorderProvider(paths codex.Paths, opts ReorderProviderOptions) (Result, error) {
+	if strings.TrimSpace(opts.Provider) == "" {
+		return Result{}, fmt.Errorf("provider is required")
+	}
+	db, err := codex.OpenDB(paths)
+	if err != nil {
+		return Result{}, err
+	}
+	defer db.Close()
+	threads, err := codex.ListThreads(db, opts.Provider, "", true, true, 0)
+	if err != nil {
+		return Result{}, err
+	}
+	result := Result{}
+	if len(threads) == 0 {
+		result.Lines = append(result.Lines, fmt.Sprintf("provider %s 没有 session", opts.Provider))
+		return result, nil
+	}
+	result.Lines = append(result.Lines, fmt.Sprintf("reorder provider %s: %d sessions", opts.Provider, len(threads)))
+	if opts.DryRun {
+		return result, nil
+	}
+	name := opts.SnapshotName
+	if name == "" {
+		name = "reorder-provider-" + opts.Provider
+	}
+	rollouts := make([]string, 0, len(threads))
+	manifest := Manifest{Mode: "reorder-provider"}
+	for _, t := range threads {
+		rollouts = append(rollouts, t.RolloutPath)
+		manifest.Entries = append(manifest.Entries, ManifestEntry{
+			OldID: t.ID, OldProvider: t.ModelProvider, RolloutPath: t.RolloutPath,
+		})
+	}
+	snap, err := createSnapshot(paths, name, backupFiles(paths, false, false), rollouts, manifest)
+	if err != nil {
+		return Result{}, err
+	}
+	result.Snapshot = snap
+	tx, err := db.Begin()
+	if err != nil {
+		return result, err
+	}
+	if err := codex.ReorderProviderThreads(tx, opts.Provider); err != nil {
+		_ = tx.Rollback()
+		return result, err
+	}
+	if err := tx.Commit(); err != nil {
+		return result, err
+	}
+	if integrity, err := codex.Integrity(db); err != nil || integrity != "ok" {
+		return result, fmt.Errorf("sqlite integrity_check: %s %v", integrity, err)
+	}
+	result.Lines = append(result.Lines, "snapshot: "+snap)
+	return result, nil
+}
+
+func providerSet(names []string) map[string]bool {
+	out := map[string]bool{}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+func providerSetLabel(set map[string]bool) string {
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }
 
 func ClearProvider(paths codex.Paths, opts ClearProviderOptions) (Result, error) {
@@ -242,6 +333,10 @@ func retag(paths codex.Paths, db *sql.DB, threads []codex.Thread, opts Options, 
 			return result, err
 		}
 	}
+	if err := codex.ReorderProviderThreads(tx, opts.Target); err != nil {
+		_ = tx.Rollback()
+		return result, err
+	}
 	if err := tx.Commit(); err != nil {
 		return result, err
 	}
@@ -280,7 +375,9 @@ func clone(paths codex.Paths, db *sql.DB, threads []codex.Thread, opts Options, 
 		return Result{}, err
 	}
 	var created []string
-	for i, t := range threads {
+	for _, job := range cloneOrder(threads) {
+		i := job.index
+		t := job.thread
 		newID := newUUID()
 		newRollout, err := codex.CloneRollout(t.RolloutPath, t.ID, newID, opts.Target)
 		if err != nil {
@@ -294,7 +391,7 @@ func clone(paths codex.Paths, db *sql.DB, threads []codex.Thread, opts Options, 
 			removeFiles(created)
 			return result, err
 		}
-		if err := appendSessionIndex(paths.SessionIdx, t.ID, newID); err != nil {
+		if err := appendSessionIndex(paths.SessionIdx, t, newID); err != nil {
 			_ = tx.Rollback()
 			removeFiles(created)
 			return result, err
@@ -309,6 +406,11 @@ func clone(paths codex.Paths, db *sql.DB, threads []codex.Thread, opts Options, 
 		entry.NewRollout = newRollout
 		result.Entries = append(result.Entries, *entry)
 	}
+	if err := codex.ReorderProviderThreads(tx, opts.Target); err != nil {
+		_ = tx.Rollback()
+		removeFiles(created)
+		return result, err
+	}
 	if err := tx.Commit(); err != nil {
 		removeFiles(created)
 		return result, err
@@ -321,6 +423,28 @@ func clone(paths codex.Paths, db *sql.DB, threads []codex.Thread, opts Options, 
 		result.Lines = append(result.Lines, e.OldID+" cloned as "+e.NewID)
 	}
 	return result, nil
+}
+
+type cloneJob struct {
+	index  int
+	thread codex.Thread
+}
+
+func cloneOrder(threads []codex.Thread) []cloneJob {
+	jobs := make([]cloneJob, 0, len(threads))
+	for _, i := range sourceOrderForAppendIndex(threads) {
+		t := threads[i]
+		jobs = append(jobs, cloneJob{index: i, thread: t})
+	}
+	return jobs
+}
+
+func sourceOrderForAppendIndex(threads []codex.Thread) []int {
+	order := make([]int, 0, len(threads))
+	for i := len(threads) - 1; i >= 0; i-- {
+		order = append(order, i)
+	}
+	return order
 }
 
 func verifyRetag(db *sql.DB, threads []codex.Thread, target string) error {
@@ -346,35 +470,57 @@ func verifyRetag(db *sql.DB, threads []codex.Thread, target string) error {
 	return nil
 }
 
-func appendSessionIndex(path, oldID, newID string) error {
+func appendSessionIndex(path string, t codex.Thread, newID string) error {
 	f, err := os.Open(path)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := sc.Text()
-		if strings.Contains(line, oldID) {
+	if err == nil {
+		defer f.Close()
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
+		for sc.Scan() {
+			line := sc.Bytes()
 			var obj map[string]any
-			if err := json.Unmarshal([]byte(line), &obj); err != nil {
-				return err
+			if err := json.Unmarshal(line, &obj); err != nil {
+				continue
+			}
+			if id, ok := obj["id"].(string); !ok || id != t.ID {
+				continue
 			}
 			obj["id"] = newID
-			out, _ := json.Marshal(obj)
-			w, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
-			if err != nil {
-				return err
-			}
-			defer w.Close()
-			_, err = w.Write(append(out, '\n'))
+			return appendSessionIndexObject(path, obj)
+		}
+		if err := sc.Err(); err != nil {
 			return err
 		}
 	}
-	if err := sc.Err(); err != nil {
+	return appendSessionIndexObject(path, fallbackSessionIndexEntry(t, newID))
+}
+
+func appendSessionIndexObject(path string, obj map[string]any) error {
+	out, err := json.Marshal(obj)
+	if err != nil {
 		return err
 	}
-	return fmt.Errorf("session_index entry not found for %s", oldID)
+	w, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+	_, err = w.Write(append(out, '\n'))
+	return err
+}
+
+func fallbackSessionIndexEntry(t codex.Thread, newID string) map[string]any {
+	entry := map[string]any{
+		"id":          newID,
+		"thread_name": codex.DisplayThreadTitle(t),
+	}
+	if t.UpdatedAt > 0 {
+		entry["updated_at"] = time.Unix(t.UpdatedAt, 0).UTC().Format(time.RFC3339Nano)
+	}
+	return entry
 }
 
 func removeSessionIndexEntries(path string, ids []string) error {

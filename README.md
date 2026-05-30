@@ -31,6 +31,7 @@ cd codex-session-migrator
 
 ```bash
 codex-session-migrator
+codex-session-migrator -from openai -to sub2api -dry-run
 codex-session-migrator -from openai -to sub2api -mode retag -dry-run
 codex-session-migrator -ids <thread-id> -to sub2api -mode clone -dry-run
 codex-session-migrator -rollback <snapshot-dir-or-name>
@@ -58,9 +59,9 @@ codex-session-migrator -rollback <snapshot-dir-or-name>
 - `o`：设置
 - `Ctrl+E`：演示模式，隐藏真实项目名和真实会话，改用 mock 数据
 - `e` / `t`：选择或切换目标 provider
-- `c`：切换 `retag` / `clone`
-- `d`：dry-run
-- `m`：确认并执行迁移；焦点在 Projects 时迁移/克隆当前项目下全部会话
+- `c`：切换 `clone` / `retag`，默认 `clone`
+- `d`：dry-run；焦点在 Providers / Projects / Sessions 时分别预览当前 provider / 项目 / 会话
+- `m`：确认并执行迁移；焦点在 Providers / Projects / Sessions 时分别迁移或克隆当前 provider / 项目 / 会话
 - `x`：按当前焦点删除 provider / project / session
 - `r`：rollback
 - `q` / `Esc`：退出或返回

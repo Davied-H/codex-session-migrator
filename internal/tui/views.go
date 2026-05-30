@@ -65,9 +65,16 @@ var (
 			Padding(0, 1)
 	activePanelStyle = panelStyle.Copy().
 				BorderForeground(colorActive)
+	errorPanelStyle = panelStyle.Copy().
+			BorderForeground(colorBad)
 	panelTitleStyle = lipgloss.NewStyle().
 			Foreground(colorMuted).
 			Bold(true)
+	errorTitleStyle = lipgloss.NewStyle().
+			Foreground(colorBad).
+			Bold(true)
+	errorBodyStyle = lipgloss.NewStyle().
+			Foreground(colorBad)
 	activePanelTitleStyle = lipgloss.NewStyle().
 				Foreground(colorActive).
 				Bold(true)
@@ -102,6 +109,12 @@ func (m Model) View() string {
 	if height <= 0 {
 		height = 28
 	}
+	if m.errorMessage != "" {
+		return m.renderErrorModal(width, height)
+	}
+	if m.onboardingOpen {
+		return m.renderOnboardingModal(width, height)
+	}
 	if m.clearConfirm {
 		return m.renderClearConfirm(width, height)
 	}
@@ -124,6 +137,137 @@ func (m Model) View() string {
 		return m.renderSettingsModal(width, height)
 	}
 	return m.renderMain(width, height)
+}
+
+func (m Model) renderErrorModal(width, height int) string {
+	base := m.renderMain(width, height)
+	boxWidth, boxHeight := m.errorModalSize(width, height)
+	contentWidth, contentHeight := panelContentSize(errorPanelStyle, boxWidth, boxHeight)
+	title := m.errorTitle
+	if strings.TrimSpace(title) == "" {
+		title = "操作失败"
+	}
+	bodyWidth := max(1, contentWidth-2)
+	bodyRows := wrapText(m.errorMessage, bodyWidth)
+	maxBodyRows := max(1, contentHeight-5)
+	if len(bodyRows) > maxBodyRows {
+		bodyRows = append(bodyRows[:maxBodyRows-1], "...")
+	}
+	rows := []string{
+		badBadgeStyle.Render("ERROR") + " " + errorTitleStyle.Render(title) + padRight("", max(1, contentWidth-lipgloss.Width(title)-10)) + keyStyle.Render("Esc"),
+		dimStyle.Render(strings.Repeat("─", contentWidth)),
+		"",
+	}
+	for _, row := range bodyRows {
+		rows = append(rows, errorBodyStyle.Render(truncate(row, bodyWidth)))
+	}
+	rows = append(rows, "", dimStyle.Render("Enter/Esc 关闭"))
+	for i := range rows {
+		rows[i] = truncate(rows[i], contentWidth)
+	}
+	box := renderPanel(errorPanelStyle, boxWidth, boxHeight, strings.Join(rows, "\n"))
+	left, top := modalOrigin(width, height, boxWidth, boxHeight)
+	return baseStyle.Render(placeOverlay(base, box, width, height, left, top))
+}
+
+type onboardingStep struct {
+	Title string
+	Body  []string
+	Hint  string
+}
+
+func onboardingSteps() []onboardingStep {
+	return []onboardingStep{
+		{
+			Title: "先确认来源 Provider",
+			Body: []string{
+				"左侧 Providers 是当前 Codex 本地会话的来源分组。",
+				"用 ↑/↓ 选择要迁移的 provider，Enter 会进入项目分组。",
+			},
+			Hint: "快捷键：p 回到 Providers，Tab 在面板间切换",
+		},
+		{
+			Title: "再缩小到项目或会话",
+			Body: []string{
+				"Projects 会按 Codex 记录的工作区分组，默认优先当前项目。",
+				"进入 Sessions 后可以用 Space 选择单条会话，a 选择当前列表。",
+			},
+			Hint: "快捷键：g 看项目，/ 搜索标题和对话内容",
+		},
+		{
+			Title: "先 dry-run，再迁移",
+			Body: []string{
+				"d 只预览将要写入的内容，不会修改数据库或 rollout。",
+				"确认范围和目标 provider 后，再按 m 打开迁移确认框。",
+			},
+			Hint: "目标 provider 用 e 选择，模式用 c 切换 retag / clone",
+		},
+		{
+			Title: "安全退出和回滚",
+			Body: []string{
+				"真正 apply 前会创建 snapshot，之后可以从 r 进入 rollback。",
+				"删除和迁移都会有确认框；不确定时先用演示模式练习。",
+			},
+			Hint: "快捷键：Ctrl+E 演示，r 回滚，q 退出，? 重新打开本引导",
+		},
+	}
+}
+
+func (m Model) renderOnboardingModal(width, height int) string {
+	baseModel := m
+	baseModel.onboardingOpen = false
+	base := baseModel.renderMain(width, height)
+	boxWidth, boxHeight := m.onboardingModalSize(width, height)
+	contentWidth, contentHeight := panelContentSize(activePanelStyle, boxWidth, boxHeight)
+	steps := onboardingSteps()
+	stepIndex := clamp(m.onboardingStep, 0, len(steps)-1)
+	step := steps[stepIndex]
+
+	bodyWidth := max(1, contentWidth-2)
+	rows := []string{
+		titleStyle.Render(fmt.Sprintf("首次使用引导  %d/%d", stepIndex+1, len(steps))) + padRight("", max(1, contentWidth-18)) + keyStyle.Render("Esc"),
+		dimStyle.Render(strings.Repeat("─", contentWidth)),
+		"",
+		keyStyle.Render(step.Title),
+		"",
+	}
+	for _, paragraph := range step.Body {
+		for _, row := range wrapText(paragraph, bodyWidth) {
+			rows = append(rows, "  "+row)
+		}
+	}
+	rows = append(rows, "", mutedStyle.Render(step.Hint), "")
+	progress := onboardingProgress(stepIndex, len(steps), max(8, min(24, contentWidth/3)))
+	action := keyStyle.Render("Enter/→") + " 下一步"
+	if stepIndex == len(steps)-1 {
+		action = keyStyle.Render("Enter") + " 完成"
+	}
+	rows = append(rows,
+		progress,
+		dimStyle.Render("←/b 上一步 · ")+action+dimStyle.Render(" · Esc 跳过"),
+	)
+	for len(rows) > contentHeight {
+		removeAt := len(rows) - 4
+		if removeAt < 0 {
+			break
+		}
+		rows = append(rows[:removeAt], rows[removeAt+1:]...)
+	}
+	for i := range rows {
+		rows[i] = truncate(rows[i], contentWidth)
+	}
+	box := renderPanel(activePanelStyle, boxWidth, boxHeight, strings.Join(rows, "\n"))
+	left, top := modalOrigin(width, height, boxWidth, boxHeight)
+	return baseStyle.Render(placeOverlay(base, box, width, height, left, top))
+}
+
+func onboardingProgress(current, total, width int) string {
+	if total <= 0 || width <= 0 {
+		return ""
+	}
+	filled := int(float64(current+1) / float64(total) * float64(width))
+	filled = clamp(filled, 1, width)
+	return keyStyle.Render(strings.Repeat("━", filled)) + dimStyle.Render(strings.Repeat("─", width-filled))
 }
 
 func (m Model) renderMain(width, height int) string {
@@ -250,33 +394,104 @@ func (m Model) renderSearchBox(width, height int) string {
 func (m Model) renderMigrateConfirm(width, height int) string {
 	boxWidth, boxHeight := m.migrateConfirmSize(width, height)
 	contentWidth, _ := panelContentSize(activePanelStyle, boxWidth, boxHeight)
-	actionTitle := "迁移 Sessions"
-	countLine := fmt.Sprintf("将迁移 %d 条 session：更新原会话 provider。", m.migrateCount)
-	modeLine := "retag 会修改原会话，apply 前会自动创建 snapshot。"
-	confirmAction := "确认迁移"
+	scopeLabel := localizedMigrationLabel(m.migrateLabel)
+	actionTitle := "迁移 " + scopeLabel
+	modeText := "retag 原会话 ID"
+	updateLines := []string{
+		"1. 更新 state_5.sqlite 的 threads.model_provider",
+		"2. 更新 rollout 首行 session_meta.model_provider",
+		"3. 创建可回滚的 snapshot manifest",
+	}
 	if m.mode == migrate.ModeClone {
-		actionTitle = "克隆 Sessions"
-		countLine = fmt.Sprintf("将克隆 %d 条 session：生成新 id，并保留项目归属。", m.migrateCount)
-		modeLine = "clone 需要 Codex Desktop 已退出，apply 前会自动创建 snapshot。"
-		confirmAction = "确认克隆"
+		actionTitle = "克隆 " + scopeLabel
+		modeText = "clone 为新会话 ID"
+		updateLines = []string{
+			"1. 创建新的 rollout 文件和 thread id",
+			"2. 写入 state_5.sqlite thread 记录",
+			"3. 更新 session_index.jsonl 和 global-state 项目映射",
+			"4. 创建可回滚的 snapshot manifest",
+		}
 	}
+	leftWidth := max(12, (contentWidth-2)/2)
+	rightWidth := max(12, contentWidth-leftWidth-2)
+	fromTo := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		boxLine("来源", m.providerSourceLabel(), leftWidth),
+		"  ",
+		boxLine("目标", m.target, rightWidth),
+	)
+	buttons := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		buttonStyle("预览", false),
+		"  ",
+		buttonStyle("执行", true),
+		"  ",
+		buttonStyle("取消", false),
+	)
 	rows := []string{
-		warnBadgeStyle.Render("确认操作") + " " + titleStyle.Render(actionTitle),
+		titleStyle.Render(actionTitle) + padRight("", max(1, contentWidth-lipgloss.Width(actionTitle)-3)) + keyStyle.Render("Esc"),
+		dimStyle.Render(strings.Repeat("─", contentWidth)),
 		"",
-		mutedStyle.Render("范围: ") + keyStyle.Render(m.migrateLabel),
-		mutedStyle.Render(countLine),
-		mutedStyle.Render("来源: ") + keyStyle.Render(m.currentProvider()) +
-			mutedStyle.Render("  目标: ") + keyStyle.Render(m.target),
-		mutedStyle.Render("模式: ") + keyStyle.Render(string(m.mode)) +
-			mutedStyle.Render("，") + mutedStyle.Render(modeLine),
+		fromTo,
+		boxLine("模式", modeText, contentWidth),
+		boxLines("将更新", updateLines, contentWidth),
 		"",
-		keyStyle.Render("Enter/Y") + " " + confirmAction + "    " + keyStyle.Render("Esc/N") + " 取消",
-	}
-	for i := range rows {
-		rows[i] = truncate(rows[i], contentWidth)
+		mutedStyle.Render(fmt.Sprintf("范围：%s · %d 条会话", scopeLabel, m.migrateCount)),
+		"",
+		buttons,
+		dimStyle.Render("D 预览 · Enter/Y 执行 · Esc/N 取消"),
 	}
 	box := renderPanel(activePanelStyle, boxWidth, boxHeight, strings.Join(rows, "\n"))
 	return baseStyle.Render(lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box))
+}
+
+func localizedMigrationLabel(label string) string {
+	switch {
+	case label == "selected sessions":
+		return "已选会话"
+	case strings.HasPrefix(label, "current session "):
+		return "当前会话 " + strings.TrimPrefix(label, "current session ")
+	case strings.HasPrefix(label, "provider "):
+		return "Provider " + strings.TrimPrefix(label, "provider ")
+	case strings.HasPrefix(label, "providers "):
+		return "Providers " + strings.TrimPrefix(label, "providers ")
+	case strings.HasPrefix(label, "project "):
+		return "项目 " + strings.TrimPrefix(label, "project ")
+	default:
+		return label
+	}
+}
+
+func boxLine(label, value string, width int) string {
+	content := titleStyle.Render(label) + "\n" + value
+	return lipgloss.NewStyle().
+		Width(max(1, width-2)).
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(colorMuted).
+		Padding(0, 1).
+		Render(content)
+}
+
+func boxLines(label string, values []string, width int) string {
+	content := titleStyle.Render(label) + "\n" + strings.Join(values, "\n")
+	return lipgloss.NewStyle().
+		Width(max(1, width-2)).
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(colorMuted).
+		Padding(0, 1).
+		Render(content)
+}
+
+func buttonStyle(label string, primary bool) string {
+	style := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		Padding(0, 2)
+	if primary {
+		style = style.BorderForeground(colorActive).Bold(true)
+	} else {
+		style = style.BorderForeground(colorMuted)
+	}
+	return style.Render(label)
 }
 
 func (m Model) renderClearConfirm(width, height int) string {
@@ -332,6 +547,7 @@ func (m Model) renderSettingsBox(width, height int) string {
 		{"目标 Provider", m.target, "选择迁移目标 provider"},
 		{"迁移模式", string(m.mode), "retag 修改原会话，clone 复制新会话"},
 		{"清理归档", fmt.Sprintf("%d 条", m.archivedSessionCount()), "删除所有 archived sessions，并创建 snapshot"},
+		{"清理子代理", fmt.Sprintf("%d 条", m.subagentSessionCount()), "删除所有 sub-agent sessions，并创建 snapshot"},
 	}
 	labelWidth := max(10, min(18, contentWidth/4))
 	valueWidth := max(10, min(20, contentWidth/4))
@@ -378,6 +594,9 @@ func (m Model) renderHeader(width int) string {
 		codexBadge,
 		dbBadge,
 		mutedStyle.Render(fmt.Sprintf("已选 %d", len(m.selectedIDs()))),
+	}
+	if providerCount := len(m.selectedProviderNames()); providerCount > 0 {
+		statusParts = append(statusParts, mutedStyle.Render(fmt.Sprintf("来源 %d", providerCount)))
 	}
 	if m.demoMode {
 		statusParts = append(statusParts, warnPillStyle.Render("Demo"))
@@ -472,9 +691,14 @@ func (m Model) renderProviders(width, height int) string {
 	end := min(len(providers), m.offsetP+limit)
 	for i := m.offsetP; i < end; i++ {
 		p := providers[i]
-		nameWidth := max(1, rowWidth-6)
-		line := padRight(truncate(p.Name, nameWidth), nameWidth) + fmt.Sprintf(" %5d", p.Total)
-		rows = append(rows, m.renderNavRow(line, contentWidth, m.focus == focusProviders && i == m.cursorP, false))
+		selected := m.selectedProviders[p.Name]
+		check := "[ ]"
+		if selected {
+			check = "[x]"
+		}
+		nameWidth := max(1, rowWidth-lipgloss.Width(check)-1-6)
+		line := check + " " + padRight(truncate(p.Name, nameWidth), nameWidth) + fmt.Sprintf(" %5d", p.Total)
+		rows = append(rows, m.renderNavRow(line, contentWidth, m.focus == focusProviders && i == m.cursorP, selected))
 	}
 	rows = append(rows, m.scrollHint(m.offsetP, limit, len(providers)))
 	if len(providers) == 0 {

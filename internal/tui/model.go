@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,67 +28,72 @@ const (
 )
 
 type Model struct {
-	paths          codex.Paths
-	diag           codex.Diagnostics
-	globalIndex    codex.GlobalIndex
-	sessionNames   map[string]string
-	providers      []providerRow
-	projects       []projectRow
-	allSessions    []codex.Thread
-	sessions       []codex.Thread
-	selected       map[string]bool
-	cursorP        int
-	cursorG        int
-	cursorS        int
-	target         string
-	mode           migrate.Mode
-	search         string
-	searchOpen     bool
-	searchQuery    string
-	searchCursor   int
-	searchOffset   int
-	searchResults  []searchResult
-	searchDocs     map[string]searchDoc
-	searchIndexSeq int
-	searchIndexPos int
-	searchIndexing bool
-	input          string
-	inputMode      string
-	pickerOpen     bool
-	pickerQuery    string
-	pickerCursor   int
-	pickerOffset   int
-	migrateConfirm bool
-	migrateLabel   string
-	migrateCount   int
-	migrateIDs     []string
-	clearConfirm   bool
-	clearScope     string
-	clearLabel     string
-	clearCount     int
-	clearIDs       []string
-	clearExpected  string
-	clearInput     string
-	settingsOpen   bool
-	settingsCursor int
-	includeA       bool
-	includeS       bool
-	focus          focus
-	message        string
-	snapshots      []string
-	width          int
-	height         int
-	offsetP        int
-	offsetG        int
-	offsetS        int
-	offsetR        int
-	detailOpen     bool
-	detail         codex.ConversationInfo
-	detailThread   codex.Thread
-	detailErr      string
-	detailOffset   int
-	titleFrame     int
-	demoMode       bool
+	paths             codex.Paths
+	diag              codex.Diagnostics
+	globalIndex       codex.GlobalIndex
+	sessionNames      map[string]string
+	providers         []providerRow
+	projects          []projectRow
+	allSessions       []codex.Thread
+	sessions          []codex.Thread
+	selected          map[string]bool
+	selectedProviders map[string]bool
+	cursorP           int
+	cursorG           int
+	cursorS           int
+	target            string
+	mode              migrate.Mode
+	search            string
+	searchOpen        bool
+	searchQuery       string
+	searchCursor      int
+	searchOffset      int
+	searchResults     []searchResult
+	searchDocs        map[string]searchDoc
+	searchIndexSeq    int
+	searchIndexPos    int
+	searchIndexing    bool
+	input             string
+	inputMode         string
+	pickerOpen        bool
+	pickerQuery       string
+	pickerCursor      int
+	pickerOffset      int
+	migrateConfirm    bool
+	migrateLabel      string
+	migrateCount      int
+	migrateIDs        []string
+	clearConfirm      bool
+	clearScope        string
+	clearLabel        string
+	clearCount        int
+	clearIDs          []string
+	clearExpected     string
+	clearInput        string
+	settingsOpen      bool
+	settingsCursor    int
+	onboardingOpen    bool
+	onboardingStep    int
+	includeA          bool
+	includeS          bool
+	focus             focus
+	message           string
+	errorTitle        string
+	errorMessage      string
+	snapshots         []string
+	width             int
+	height            int
+	offsetP           int
+	offsetG           int
+	offsetS           int
+	offsetR           int
+	detailOpen        bool
+	detail            codex.ConversationInfo
+	detailThread      codex.Thread
+	detailErr         string
+	detailOffset      int
+	titleFrame        int
+	demoMode          bool
 }
 
 type providerRow struct {
@@ -104,7 +110,7 @@ type projectRow struct {
 
 func (m Model) viewProviders() []providerRow {
 	if m.demoMode {
-		return demoProviders()
+		return m.demoProviders()
 	}
 	return m.providers
 }
@@ -118,7 +124,7 @@ func (m Model) viewProjects() []projectRow {
 
 func (m Model) viewSessions() []codex.Thread {
 	if m.demoMode {
-		sessions := demoSessions()
+		sessions := m.demoVisibleSessions()
 		projects := demoProjects()
 		if m.cursorG < 0 || m.cursorG >= len(projects) || projects[m.cursorG].Key == allProjectsKey {
 			return sessions
@@ -137,16 +143,22 @@ func (m Model) viewSessions() []codex.Thread {
 
 func (m Model) viewAllSessionCount() int {
 	if m.demoMode {
-		return len(demoSessions())
+		return len(m.demoAllSessions())
 	}
 	return len(m.allSessions)
 }
 
-func demoProviders() []providerRow {
-	return []providerRow{
-		{Name: "demo-openai", Total: 12},
-		{Name: "demo-sub2api", Total: 6},
+func (m Model) demoProviders() []providerRow {
+	byName := map[string]int{}
+	for _, s := range m.demoAllSessions() {
+		byName[s.ModelProvider]++
 	}
+	providers := make([]providerRow, 0, len(byName))
+	for name, total := range byName {
+		providers = append(providers, providerRow{Name: name, Total: total})
+	}
+	sort.Slice(providers, func(i, j int) bool { return providers[i].Name < providers[j].Name })
+	return providers
 }
 
 func demoProjects() []projectRow {
@@ -168,7 +180,43 @@ func demoSessions() []codex.Thread {
 		{ID: "demo-005", UpdatedAt: now.Add(-24 * time.Hour).Unix(), ModelProvider: "demo-sub2api", CWD: "/demo/ops-console", Title: "整理发布前检查清单"},
 		{ID: "demo-006", UpdatedAt: now.Add(-26 * time.Hour).Unix(), ModelProvider: "demo-openai", CWD: "/demo/customer-portal", Title: "补充用户资料页边界状态"},
 		{ID: "demo-007", UpdatedAt: now.Add(-48 * time.Hour).Unix(), ModelProvider: "demo-openai", CWD: "/demo/research-lab", Title: "生成周报摘要草稿"},
+		{ID: "demo-008", UpdatedAt: now.Add(-50 * time.Hour).Unix(), ModelProvider: "demo-openai", CWD: "/demo/research-lab", Title: "后台拆分调研资料", ThreadSource: "subagent"},
 	}
+}
+
+func (m Model) demoAllSessions() []codex.Thread {
+	var out []codex.Thread
+	for _, s := range demoSessions() {
+		if !m.includeA && s.Archived {
+			continue
+		}
+		if !m.includeS && isSubagentThread(s) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func (m Model) demoVisibleSessions() []codex.Thread {
+	provider := m.currentProvider()
+	query := strings.ToLower(strings.TrimSpace(m.search))
+	var out []codex.Thread
+	for _, s := range m.demoAllSessions() {
+		if provider != "" && s.ModelProvider != provider {
+			continue
+		}
+		if query != "" && !demoSessionMatchesSearch(s, query) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func demoSessionMatchesSearch(s codex.Thread, query string) bool {
+	haystack := strings.ToLower(strings.Join([]string{s.ID, s.ModelProvider, s.CWD, s.Title, s.Preview}, " "))
+	return strings.Contains(haystack, query)
 }
 
 type openMarkdownMsg struct {
@@ -214,18 +262,28 @@ const allProjectsKey = "__all__"
 
 const searchIndexBatchSize = 24
 
+const configFileName = "session-migrator-config.json"
+
+type appConfig struct {
+	OnboardingSeen bool `json:"onboarding_seen"`
+}
+
 func New(paths codex.Paths) Model {
 	m := Model{
-		paths:        paths,
-		selected:     map[string]bool{},
-		sessionNames: map[string]string{},
-		searchDocs:   map[string]searchDoc{},
-		target:       "sub2api",
-		mode:         migrate.ModeRetag,
-		focus:        focusProviders,
+		paths:             paths,
+		selected:          map[string]bool{},
+		selectedProviders: map[string]bool{},
+		sessionNames:      map[string]string{},
+		searchDocs:        map[string]searchDoc{},
+		target:            "sub2api",
+		mode:              migrate.ModeClone,
+		focus:             focusProviders,
 	}
 	m.reload()
 	m.selectCurrentWorkspaceProject()
+	if !m.onboardingSeen() {
+		m.onboardingOpen = true
+	}
 	return m
 }
 
@@ -249,6 +307,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, titleTickCmd()
 	}
 	if mouse, ok := msg.(tea.MouseMsg); ok {
+		if m.errorMessage != "" {
+			return m.updateErrorMouse(mouse), nil
+		}
+		if m.onboardingOpen {
+			return m.updateOnboardingMouse(mouse), nil
+		}
 		if m.migrateConfirm {
 			return m.updateMigrateConfirmMouse(mouse), nil
 		}
@@ -271,7 +335,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if opened, ok := msg.(openMarkdownMsg); ok {
 		if opened.err != nil {
-			m.message = "打开 Markdown 失败: " + opened.err.Error()
+			m.showError("打开 Markdown 失败", opened.err.Error())
 		} else {
 			m.message = "已打开 Markdown: " + opened.path
 		}
@@ -279,10 +343,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if cleared, ok := msg.(clearProviderMsg); ok {
 		if cleared.err != nil {
-			m.message = "删除 session 失败: " + cleared.err.Error()
+			m.showError("删除 session 失败", cleared.err.Error())
 		} else {
 			m.message = fmt.Sprintf("已删除 %s: %d 条 session", cleared.label, cleared.count)
 			m.selected = map[string]bool{}
+			m.selectedProviders = map[string]bool{}
 			m.reload()
 		}
 		return m, nil
@@ -310,6 +375,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
+	}
+	if m.errorMessage != "" {
+		return m.updateErrorKey(key)
+	}
+	if m.onboardingOpen {
+		return m.updateOnboardingKey(key)
 	}
 	if m.migrateConfirm {
 		return m.updateMigrateConfirmKey(key)
@@ -363,6 +434,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "g":
 		m.focus = focusProjects
 	case " ":
+		if m.focus == focusProviders {
+			m.toggleCurrentProviderSelection()
+		}
 		sessions := m.viewSessions()
 		if m.focus == focusSessions && len(sessions) > 0 {
 			id := sessions[m.cursorS].ID
@@ -373,17 +447,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggleSelectVisibleSessions()
 		} else {
 			m.includeA = !m.includeA
-			m.reload()
+			if m.demoMode {
+				m.cursorS = 0
+				m.offsetS = 0
+			} else {
+				m.reload()
+			}
 		}
 	case "s":
 		m.includeS = !m.includeS
-		m.reloadProviderData()
-	case "/":
 		if m.demoMode {
-			m.message = "演示模式不搜索真实会话；Ctrl+E 退出演示模式"
+			m.cursorS = 0
+			m.offsetS = 0
 		} else {
-			cmd = m.openSearchModal()
+			m.reload()
 		}
+	case "/":
+		cmd = m.openSearchModal()
 	case "e":
 		m.openProviderPicker()
 	case "ctrl+e":
@@ -401,17 +481,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.openClearConfirm()
 		}
 	case "d":
-		if m.demoMode {
-			m.message = "演示模式不会迁移真实会话；Ctrl+E 退出演示模式"
-		} else {
-			m.run(true)
-		}
+		m.run(true)
 	case "m":
-		if m.demoMode {
-			m.message = "演示模式不会迁移真实会话；Ctrl+E 退出演示模式"
-		} else {
-			m.openMigrateConfirm()
-		}
+		m.openMigrateConfirm()
 	case "b":
 		m.message = "迁移 apply 会自动创建 snapshot；独立 snapshot 请使用 dry-run 检查后执行迁移。"
 	case "r":
@@ -438,7 +510,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if m.focus == focusRollback && len(m.snapshots) > 0 {
 			name := m.snapshots[m.cursorS]
 			if err := migrate.Rollback(m.paths, name); err != nil {
-				m.message = "rollback 失败: " + err.Error()
+				m.showError("rollback 失败", err.Error())
 			} else {
 				m.message = "rollback 完成: " + name
 				m.reload()
@@ -453,10 +525,146 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "?":
-		m.message = "q quit | tab focus | p providers | g projects | j/k move | enter/v open markdown | space select | / search | o settings | Ctrl+E demo | e choose target | t cycle target | c mode | x clear provider | d dry-run | m apply | r rollback"
+		m.openOnboarding()
 	}
 	m.ensureOffsets()
 	return m, cmd
+}
+
+func (m *Model) showError(title, message string) {
+	m.errorTitle = title
+	m.errorMessage = message
+	m.message = ""
+}
+
+func (m *Model) openOnboarding() {
+	m.onboardingOpen = true
+	m.onboardingStep = 0
+}
+
+func (m Model) updateOnboardingKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.closeOnboarding()
+	case "enter", "right", "l", " ":
+		if m.onboardingStep >= len(onboardingSteps())-1 {
+			m.closeOnboarding()
+		} else {
+			m.onboardingStep++
+		}
+	case "left", "h", "b":
+		m.onboardingStep = clamp(m.onboardingStep-1, 0, len(onboardingSteps())-1)
+	case "home":
+		m.onboardingStep = 0
+	case "end":
+		m.onboardingStep = len(onboardingSteps()) - 1
+	}
+	return m, nil
+}
+
+func (m Model) updateOnboardingMouse(msg tea.MouseMsg) Model {
+	mouse := tea.MouseEvent(msg)
+	if mouse.Action == tea.MouseActionPress && mouse.Button == tea.MouseButtonLeft {
+		width := m.width
+		if width <= 0 {
+			width = 90
+		}
+		height := m.height
+		if height <= 0 {
+			height = 28
+		}
+		boxWidth, boxHeight := m.onboardingModalSize(width, height)
+		left, top := modalOrigin(width, height, boxWidth, boxHeight)
+		if mouse.X < left || mouse.X >= left+boxWidth || mouse.Y < top || mouse.Y >= top+boxHeight {
+			m.closeOnboarding()
+			return m
+		}
+		if mouse.Y >= top+boxHeight-3 {
+			if mouse.X < left+boxWidth/2 {
+				m.onboardingStep = clamp(m.onboardingStep-1, 0, len(onboardingSteps())-1)
+			} else if m.onboardingStep >= len(onboardingSteps())-1 {
+				m.closeOnboarding()
+			} else {
+				m.onboardingStep++
+			}
+		}
+	}
+	return m
+}
+
+func (m *Model) closeOnboarding() {
+	m.onboardingOpen = false
+	m.onboardingStep = clamp(m.onboardingStep, 0, len(onboardingSteps())-1)
+	if err := m.saveOnboardingSeen(); err != nil {
+		m.message = "保存引导状态失败: " + err.Error()
+	}
+}
+
+func (m Model) configPath() string {
+	if strings.TrimSpace(m.paths.Home) == "" {
+		return configFileName
+	}
+	return filepath.Join(m.paths.Home, configFileName)
+}
+
+func (m Model) onboardingSeen() bool {
+	body, err := os.ReadFile(m.configPath())
+	if err != nil {
+		return false
+	}
+	var cfg appConfig
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		return false
+	}
+	return cfg.OnboardingSeen
+}
+
+func (m Model) saveOnboardingSeen() error {
+	path := m.configPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(appConfig{OnboardingSeen: true}, "", "  ")
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
+	return os.WriteFile(path, body, 0o600)
+}
+
+func (m Model) updateErrorKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "esc", "enter", "b", "left":
+		m.errorTitle = ""
+		m.errorMessage = ""
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) updateErrorMouse(msg tea.MouseMsg) Model {
+	mouse := tea.MouseEvent(msg)
+	if mouse.Action != tea.MouseActionPress || mouse.Button != tea.MouseButtonLeft {
+		return m
+	}
+	width := m.width
+	if width <= 0 {
+		width = 90
+	}
+	height := m.height
+	if height <= 0 {
+		height = 28
+	}
+	boxWidth, boxHeight := m.errorModalSize(width, height)
+	left, top := modalOrigin(width, height, boxWidth, boxHeight)
+	if mouse.X < left || mouse.X >= left+boxWidth || mouse.Y < top || mouse.Y >= top+boxHeight {
+		m.errorTitle = ""
+		m.errorMessage = ""
+	}
+	return m
 }
 
 func (m *Model) toggleSelectVisibleSessions() {
@@ -485,9 +693,28 @@ func (m *Model) toggleSelectVisibleSessions() {
 	m.message = fmt.Sprintf("已选择当前项目过滤结果 %d 条", len(sessions))
 }
 
+func (m *Model) toggleCurrentProviderSelection() {
+	provider := m.currentProvider()
+	if provider == "" {
+		m.message = "当前没有可选择的 provider"
+		return
+	}
+	if m.selectedProviders == nil {
+		m.selectedProviders = map[string]bool{}
+	}
+	if m.selectedProviders[provider] {
+		delete(m.selectedProviders, provider)
+		m.message = "已取消来源 provider: " + provider
+		return
+	}
+	m.selectedProviders[provider] = true
+	m.message = "已选择来源 provider: " + provider
+}
+
 func (m *Model) toggleDemoMode() {
 	m.demoMode = !m.demoMode
 	m.selected = map[string]bool{}
+	m.selectedProviders = map[string]bool{}
 	m.searchOpen = false
 	m.detailOpen = false
 	m.pickerOpen = false
@@ -594,8 +821,9 @@ func (m *Model) openThreadMarkdown(t codex.Thread) tea.Cmd {
 func (m *Model) refreshSearchResults() {
 	query := strings.TrimSpace(m.searchQuery)
 	m.searchResults = m.searchResults[:0]
+	sessions := m.searchSourceSessions()
 	if query == "" {
-		for _, t := range m.sessions {
+		for _, t := range sessions {
 			m.searchResults = append(m.searchResults, searchResult{
 				Thread:  t,
 				Title:   m.displayThreadTitle(t),
@@ -606,7 +834,7 @@ func (m *Model) refreshSearchResults() {
 		m.ensureSearchVisible()
 		return
 	}
-	for _, t := range m.sessions {
+	for _, t := range sessions {
 		doc := m.searchDocumentCached(t)
 		best, ok := bestSearchResult(t, doc, query)
 		if ok {
@@ -633,6 +861,13 @@ func (m *Model) searchDocumentCached(t codex.Thread) searchDoc {
 	doc := searchDocFromThread(t, m.sessionNames)
 	m.searchDocs[t.ID] = doc
 	return doc
+}
+
+func (m Model) searchSourceSessions() []codex.Thread {
+	if m.demoMode {
+		return m.viewSessions()
+	}
+	return m.sessions
 }
 
 func openPath(path string) error {
@@ -713,7 +948,13 @@ func (m Model) updateSearchKey(key tea.KeyMsg) (Model, tea.Cmd) {
 			m.search = m.searchQuery
 			m.searchOpen = false
 			result := m.searchResults[clamp(m.searchCursor, 0, len(m.searchResults)-1)]
-			cmd = m.openThreadMarkdown(result.Thread)
+			if m.demoMode {
+				m.focus = focusSessions
+				m.cursorS = m.indexOfVisibleSession(result.Thread.ID)
+				m.message = "演示模式已应用搜索，不打开真实 Markdown"
+			} else {
+				cmd = m.openThreadMarkdown(result.Thread)
+			}
 		}
 	case "backspace":
 		if len(m.searchQuery) > 0 {
@@ -814,7 +1055,7 @@ func (m *Model) openSearchModal() tea.Cmd {
 	m.searchOffset = 0
 	m.searchIndexSeq++
 	m.searchIndexPos = 0
-	m.searchIndexing = len(m.sessions) > 0
+	m.searchIndexing = !m.demoMode && len(m.searchSourceSessions()) > 0
 	m.refreshSearchResults()
 	if !m.searchIndexing {
 		return nil
@@ -823,7 +1064,7 @@ func (m *Model) openSearchModal() tea.Cmd {
 }
 
 func (m Model) searchIndexBatchCmd(start, seq int) tea.Cmd {
-	sessions := append([]codex.Thread(nil), m.sessions...)
+	sessions := append([]codex.Thread(nil), m.searchSourceSessions()...)
 	names := map[string]string{}
 	for id, name := range m.sessionNames {
 		names[id] = name
@@ -979,21 +1220,43 @@ func (m *Model) activateSetting() {
 	switch m.settingsCursor {
 	case 0:
 		m.includeA = !m.includeA
-		m.reload()
+		if m.demoMode {
+			m.cursorS = 0
+			m.offsetS = 0
+			m.message = "演示模式已更新归档显示"
+		} else {
+			m.reload()
+		}
 	case 1:
 		m.includeS = !m.includeS
-		m.reloadProviderData()
+		if m.demoMode {
+			m.cursorS = 0
+			m.offsetS = 0
+			m.message = "演示模式已更新子代理显示"
+		} else {
+			m.reload()
+		}
 	case 2:
 		m.openProviderPicker()
 	case 3:
 		m.toggleMode()
 	case 4:
+		if m.demoMode {
+			m.message = "演示模式不会清理真实归档会话"
+			return
+		}
 		m.openClearArchivedConfirm()
+	case 5:
+		if m.demoMode {
+			m.message = "演示模式不会清理真实子代理会话"
+			return
+		}
+		m.openClearSubagentsConfirm()
 	}
 }
 
 func settingsItemCount() int {
-	return 5
+	return 6
 }
 
 func (m *Model) openClearArchivedConfirm() {
@@ -1029,7 +1292,49 @@ func (m *Model) openClearArchivedConfirm() {
 	m.clearInput = ""
 }
 
+func (m *Model) openClearSubagentsConfirm() {
+	if !m.diag.DBExists {
+		m.message = "数据库不存在，无法清理子代理会话"
+		return
+	}
+	db, err := codex.OpenDB(m.paths)
+	if err != nil {
+		m.message = "读取子代理会话失败: " + err.Error()
+		return
+	}
+	defer db.Close()
+	threads, err := codex.ListSubagentThreads(db)
+	if err != nil {
+		m.message = "读取子代理会话失败: " + err.Error()
+		return
+	}
+	if len(threads) == 0 {
+		m.message = "没有子代理会话可清理"
+		return
+	}
+	ids := make([]string, 0, len(threads))
+	for _, t := range threads {
+		ids = append(ids, t.ID)
+	}
+	m.clearConfirm = true
+	m.clearScope = "subagents"
+	m.clearLabel = "sub-agent sessions"
+	m.clearCount = len(ids)
+	m.clearIDs = ids
+	m.clearExpected = ""
+	m.clearInput = ""
+}
+
 func (m Model) archivedSessionCount() int {
+	if m.demoMode {
+		total := 0
+		for _, s := range demoSessions() {
+			if s.Archived {
+				total++
+			}
+		}
+		return total
+	}
 	total := 0
 	for _, c := range m.diag.Counts {
 		if c.Archived {
@@ -1037,6 +1342,23 @@ func (m Model) archivedSessionCount() int {
 		}
 	}
 	return total
+}
+
+func (m Model) subagentSessionCount() int {
+	if m.demoMode {
+		total := 0
+		for _, s := range demoSessions() {
+			if isSubagentThread(s) {
+				total++
+			}
+		}
+		return total
+	}
+	return m.diag.SubagentCount
+}
+
+func isSubagentThread(t codex.Thread) bool {
+	return (t.ThreadSource != "" && t.ThreadSource != "user") || strings.HasPrefix(t.Source, `{"subagent":`)
 }
 
 func (m *Model) toggleMode() {
@@ -1063,6 +1385,9 @@ func (m Model) updateMigrateConfirmKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc", "n", "N":
 		m.migrateConfirm = false
+	case "d", "D":
+		m.migrateConfirm = false
+		m.runIDs(true, append([]string{}, m.migrateIDs...))
 	case "enter", "y", "Y":
 		m.migrateConfirm = false
 		m.runIDs(false, append([]string{}, m.migrateIDs...))
@@ -1107,14 +1432,40 @@ func (m *Model) openClearConfirm() {
 }
 
 func (m Model) updateClearConfirmKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.clearExpected != "" {
+		switch key.String() {
+		case "esc":
+			m.clearConfirm = false
+		case "enter":
+			if m.clearInput != m.clearExpected {
+				m.message = "输入名称不匹配，未删除"
+				return m, nil
+			}
+			label := m.clearLabel
+			count := m.clearCount
+			ids := append([]string{}, m.clearIDs...)
+			m.clearConfirm = false
+			m.message = "正在删除 " + label + "..."
+			return m, func() tea.Msg {
+				_, err := migrate.ClearThreads(m.paths, migrate.ClearThreadsOptions{IDs: ids, Label: label})
+				return clearProviderMsg{label: label, count: count, err: err}
+			}
+		case "backspace":
+			if m.clearInput != "" {
+				m.clearInput = trimLastRune(m.clearInput)
+			}
+		default:
+			if len(key.Runes) > 0 {
+				m.clearInput += string(key.Runes)
+			}
+		}
+		return m, nil
+	}
+
 	switch key.String() {
 	case "esc", "n", "N":
 		m.clearConfirm = false
 	case "enter", "y", "Y":
-		if m.clearExpected != "" && m.clearInput != m.clearExpected {
-			m.message = "输入名称不匹配，未删除"
-			return m, nil
-		}
 		label := m.clearLabel
 		count := m.clearCount
 		ids := append([]string{}, m.clearIDs...)
@@ -1123,14 +1474,6 @@ func (m Model) updateClearConfirmKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg {
 			_, err := migrate.ClearThreads(m.paths, migrate.ClearThreadsOptions{IDs: ids, Label: label})
 			return clearProviderMsg{label: label, count: count, err: err}
-		}
-	case "backspace":
-		if m.clearExpected != "" && m.clearInput != "" {
-			m.clearInput = trimLastRune(m.clearInput)
-		}
-	default:
-		if m.clearExpected != "" && len(key.Runes) > 0 {
-			m.clearInput += string(key.Runes)
 		}
 	}
 	return m, nil
@@ -1299,6 +1642,15 @@ func (m Model) currentLen() int {
 	return len(m.viewSessions())
 }
 
+func (m Model) indexOfVisibleSession(id string) int {
+	for i, s := range m.viewSessions() {
+		if s.ID == id {
+			return i
+		}
+	}
+	return 0
+}
+
 func (m *Model) reload() {
 	diag, err := codex.Diagnose(m.paths)
 	if err != nil {
@@ -1319,12 +1671,14 @@ func (m *Model) reload() {
 	} else if m.sessionNames == nil {
 		m.sessionNames = map[string]string{}
 	}
+	visibleThreads, err := m.loadVisibleThreads("")
+	if err != nil {
+		m.showError("读取会话失败", err.Error())
+		return
+	}
 	byName := map[string]int{}
-	for _, c := range diag.Counts {
-		if !m.includeA && c.Archived {
-			continue
-		}
-		byName[c.Provider] += c.Count
+	for _, thread := range visibleThreads {
+		byName[thread.ModelProvider]++
 	}
 	m.providers = m.providers[:0]
 	for name, count := range byName {
@@ -1345,21 +1699,46 @@ func (m *Model) reloadProviderData() {
 		m.sessions = nil
 		return
 	}
-	db, err := codex.OpenDB(m.paths)
+	sessions, err := m.loadVisibleThreads(m.providers[m.cursorP].Name)
 	if err != nil {
-		m.message = err.Error()
-		return
-	}
-	defer db.Close()
-	sessions, err := codex.ListThreads(db, m.providers[m.cursorP].Name, m.search, m.includeA, m.includeS, 0)
-	if err != nil {
-		m.message = err.Error()
+		m.showError("读取会话失败", err.Error())
 		return
 	}
 	m.allSessions = sessions
 	m.rebuildProjects()
 	m.applyProjectFilter()
 	m.ensureOffsets()
+}
+
+func (m Model) loadVisibleThreads(provider string) ([]codex.Thread, error) {
+	if !m.diag.DBExists {
+		return nil, nil
+	}
+	db, err := codex.OpenDB(m.paths)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	if provider != "" {
+		return codex.ListThreads(db, provider, m.search, m.includeA, m.includeS, 0)
+	}
+	var out []codex.Thread
+	seen := map[string]bool{}
+	for _, count := range m.diag.Counts {
+		if !m.includeA && count.Archived {
+			continue
+		}
+		if seen[count.Provider] {
+			continue
+		}
+		seen[count.Provider] = true
+		threads, err := codex.ListThreads(db, count.Provider, "", m.includeA, m.includeS, 0)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, threads...)
+	}
+	return out, nil
 }
 
 func (m *Model) rebuildProjects() {
@@ -1638,14 +2017,38 @@ func (m Model) clearConfirmSize(width, height int) (int, int) {
 	return boxWidth, boxHeight
 }
 
+func (m Model) errorModalSize(width, height int) (int, int) {
+	boxWidth := min(84, max(46, width-12))
+	if width < 52 {
+		boxWidth = max(28, width)
+	}
+	boxHeight := min(14, max(10, height-8))
+	if height < 14 {
+		boxHeight = max(8, height)
+	}
+	return boxWidth, boxHeight
+}
+
+func (m Model) onboardingModalSize(width, height int) (int, int) {
+	boxWidth := min(86, max(50, width-14))
+	if width < 56 {
+		boxWidth = max(30, width)
+	}
+	boxHeight := min(17, max(13, height-8))
+	if height < 16 {
+		boxHeight = max(9, height)
+	}
+	return boxWidth, boxHeight
+}
+
 func (m Model) migrateConfirmSize(width, height int) (int, int) {
-	boxWidth := min(74, max(38, width-10))
+	boxWidth := min(96, max(64, width-10))
 	if width < 44 {
 		boxWidth = max(24, width)
 	}
-	boxHeight := min(12, max(10, height-8))
-	if height < 12 {
-		boxHeight = max(8, height)
+	boxHeight := min(32, max(24, height-2))
+	if height < 20 {
+		boxHeight = max(10, height)
 	}
 	return boxWidth, boxHeight
 }
@@ -1655,8 +2058,8 @@ func (m Model) settingsModalSize(width, height int) (int, int) {
 	if width < 56 {
 		boxWidth = max(28, width)
 	}
-	boxHeight := min(17, max(14, height-8))
-	if height < 16 {
+	boxHeight := min(20, max(17, height-8))
+	if height < 18 {
 		boxHeight = max(8, height)
 	}
 	return boxWidth, boxHeight
@@ -1684,11 +2087,19 @@ func (m *Model) run(dry bool) {
 }
 
 func (m *Model) runIDs(dry bool, ids []string) {
+	if m.demoMode {
+		m.message = m.demoMigrationMessage(dry, ids)
+		if !dry {
+			m.selected = map[string]bool{}
+			m.selectedProviders = map[string]bool{}
+		}
+		return
+	}
 	res, err := migrate.Run(m.paths, migrate.Options{
-		IDs: ids, Target: m.target, Mode: m.mode, DryRun: dry, RequireFrom: m.providers[m.cursorP].Name,
+		IDs: ids, Target: m.target, Mode: m.mode, DryRun: dry, RequireFromAny: m.selectedProviderNamesOrCurrent(),
 	})
 	if err != nil {
-		m.message = err.Error()
+		m.showError("迁移失败", err.Error())
 		return
 	}
 	prefix := "apply 完成"
@@ -1698,35 +2109,86 @@ func (m *Model) runIDs(dry bool, ids []string) {
 	m.message = prefix + ":\n" + strings.Join(res.Lines, "\n")
 	if !dry {
 		m.selected = map[string]bool{}
+		m.selectedProviders = map[string]bool{}
 		m.reload()
 	}
 }
 
+func (m Model) demoMigrationMessage(dry bool, ids []string) string {
+	action := "演示 apply 完成"
+	if dry {
+		action = "演示 dry-run"
+	}
+	mode := string(m.mode)
+	from := strings.Join(m.selectedProviderNamesOrCurrent(), ",")
+	if from == "" {
+		from = "demo-provider"
+	}
+	lines := []string{
+		fmt.Sprintf("%s: %d 条会话", action, len(ids)),
+		fmt.Sprintf("mode=%s from=%s to=%s", mode, from, m.target),
+		"未修改数据库、global-state、session_index 或 rollout 文件",
+	}
+	for _, id := range ids {
+		lines = append(lines, fmt.Sprintf("- %s -> %s (%s)", shortDisplayID(id), m.target, mode))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m Model) migrationTarget() (label string, ids []string) {
-	if m.focus == focusProjects {
+	switch m.focus {
+	case focusProviders:
+		return m.providerMigrationTarget()
+	case focusProjects:
 		return m.projectMigrationTarget()
 	}
 	ids = m.selectedIDs()
 	if len(ids) > 0 {
 		return "selected sessions", ids
 	}
-	if len(m.sessions) == 0 || m.cursorS < 0 || m.cursorS >= len(m.sessions) {
+	sessions := m.viewSessions()
+	if len(sessions) == 0 || m.cursorS < 0 || m.cursorS >= len(sessions) {
 		return "", nil
 	}
-	return "current session " + shortDisplayID(m.sessions[m.cursorS].ID), []string{m.sessions[m.cursorS].ID}
+	return "current session " + shortDisplayID(sessions[m.cursorS].ID), []string{sessions[m.cursorS].ID}
+}
+
+func (m Model) providerMigrationTarget() (label string, ids []string) {
+	providers := m.selectedProviderNamesOrCurrent()
+	if len(providers) == 0 {
+		return "", nil
+	}
+	selected := providerNameSet(providers)
+	for _, s := range m.migrationSourceSessions() {
+		if selected[s.ModelProvider] {
+			ids = append(ids, s.ID)
+		}
+	}
+	if len(providers) == 1 {
+		return "provider " + providers[0], ids
+	}
+	return "providers " + strings.Join(providers, ", "), ids
 }
 
 func (m Model) projectMigrationTarget() (label string, ids []string) {
-	if len(m.projects) == 0 || m.cursorG < 0 || m.cursorG >= len(m.projects) {
+	projects := m.viewProjects()
+	if len(projects) == 0 || m.cursorG < 0 || m.cursorG >= len(projects) {
 		return "", nil
 	}
-	project := m.projects[m.cursorG]
-	for _, s := range m.allSessions {
-		if project.Key == allProjectsKey || m.sessionProjectRoot(s) == project.Key {
+	project := projects[m.cursorG]
+	for _, s := range m.migrationSourceSessions() {
+		if project.Key == allProjectsKey || filepath.Clean(s.CWD) == filepath.Clean(project.Root) || m.sessionProjectRoot(s) == project.Key {
 			ids = append(ids, s.ID)
 		}
 	}
 	return "project " + project.Name, ids
+}
+
+func (m Model) migrationSourceSessions() []codex.Thread {
+	if m.demoMode {
+		return m.demoAllSessions()
+	}
+	return m.allSessions
 }
 
 func (m Model) selectedIDs() []string {
@@ -1738,6 +2200,57 @@ func (m Model) selectedIDs() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func (m Model) selectedProviderNamesOrCurrent() []string {
+	names := m.selectedProviderNames()
+	if len(names) > 0 {
+		return names
+	}
+	if provider := m.currentProvider(); provider != "" {
+		return []string{provider}
+	}
+	return nil
+}
+
+func (m Model) providerSourceLabel() string {
+	names := m.selectedProviderNamesOrCurrent()
+	if len(names) == 0 {
+		return ""
+	}
+	return strings.Join(names, ", ")
+}
+
+func (m Model) selectedProviderNames() []string {
+	if len(m.selectedProviders) == 0 {
+		return nil
+	}
+	visible := map[string]bool{}
+	var names []string
+	for _, p := range m.viewProviders() {
+		visible[p.Name] = true
+		if m.selectedProviders[p.Name] {
+			names = append(names, p.Name)
+		}
+	}
+	for name, ok := range m.selectedProviders {
+		if ok && !visible[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func providerNameSet(names []string) map[string]bool {
+	out := map[string]bool{}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 func listSnapshots(dir string) []string {
